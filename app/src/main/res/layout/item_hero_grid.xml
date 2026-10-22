@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- One portrait in the tap-to-pick grid. -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:background="?attr/selectableItemBackground"
+    android:gravity="center_horizontal"
+    android:orientation="vertical"
+    android:paddingVertical="3dp">
+
+    <FrameLayout
+        android:layout_width="42dp" android:layout_height="42dp">
+        <ImageView
+            android:id="@+id/gridIcon"
+            android:layout_width="match_parent" android:layout_height="match_parent"
+            android:importantForAccessibility="no"
+            android:scaleType="centerCrop"
+            android:src="@drawable/hero_placeholder" />
+        <View
+            android:id="@+id/gridRing"
+            android:layout_width="match_parent" android:layout_height="match_parent"
+            android:background="@drawable/pick_ring"
+            android:visibility="gone" />
+    </FrameLayout>
+
+    <TextView
+        android:id="@+id/gridName"
+        android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:ellipsize="end"
+        android:gravity="center"
+        android:maxLines="1"
+        android:paddingHorizontal="1dp"
+        android:textColor="@color/text_primary"
+        android:textSize="9.5sp" />
+</LinearLayout>

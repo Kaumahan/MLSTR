@@ -5,5 +5,4 @@
     android:padding="10dp"
     android:background="@drawable/bubble_bg"
     android:contentDescription="@string/bubble_desc"
-    android:elevation="6dp"
     android:src="@drawable/ic_bubble" />

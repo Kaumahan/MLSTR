@@ -1,13 +1,9 @@
 <resources>
     <string name="app_name">Ace Counter Pick</string>
     <string name="panel_title">Counter Pick</string>
-    <string name="tab_counter">Counter</string>
+    <string name="tab_counter">Draft</string>
     <string name="tab_first_pick">First Pick</string>
-    <string name="tab_team">Team</string>
-    <string name="add_team">+ Team</string>
-    <string name="in_team">✓ Team</string>
-    <string name="team_pick_hint">Tap enemy heroes to add them to the team (up to 5).</string>
-    <string name="search_hint">Type enemy hero, e.g. Lukas</string>
+    <string name="search_hint">Search hero (typos OK)</string>
     <string name="back">Back</string>
     <string name="refresh">Refresh data</string>
     <string name="minimize">Minimize</string>

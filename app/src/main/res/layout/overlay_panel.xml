@@ -7,10 +7,10 @@
     android:background="@drawable/panel_bg"
     android:orientation="vertical">
 
-    <!-- Header doubles as the drag handle -->
+    <!-- One compact header row: tabs (or back + title), rank chip, refresh, close. Drag it to move. -->
     <LinearLayout
         android:id="@+id/header"
-        android:layout_width="match_parent" android:layout_height="40dp"
+        android:layout_width="match_parent" android:layout_height="38dp"
         android:background="@color/header_bg"
         android:gravity="center_vertical"
         android:orientation="horizontal"
@@ -18,64 +18,73 @@
 
         <ImageButton
             android:id="@+id/btnBack"
-            android:layout_width="38dp" android:layout_height="38dp"
+            android:layout_width="36dp" android:layout_height="36dp"
             android:background="?attr/selectableItemBackgroundBorderless"
             android:contentDescription="@string/back"
             android:src="@drawable/ic_back"
             android:visibility="gone" />
+
+        <LinearLayout
+            android:id="@+id/tabs"
+            android:layout_width="wrap_content" android:layout_height="match_parent"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingStart="2dp">
+            <TextView android:id="@+id/tabCounter"
+                android:layout_width="wrap_content" android:layout_height="28dp"
+                android:layout_marginEnd="4dp"
+                android:gravity="center" android:minWidth="64dp" android:paddingHorizontal="10dp"
+                android:text="@string/tab_counter"
+                android:textColor="@color/text_primary" android:textSize="13sp" android:textStyle="bold" />
+            <TextView android:id="@+id/tabFirstPick"
+                android:layout_width="wrap_content" android:layout_height="28dp"
+                android:gravity="center" android:minWidth="64dp" android:paddingHorizontal="10dp"
+                android:text="@string/tab_first_pick"
+                android:textColor="@color/text_primary" android:textSize="13sp" android:textStyle="bold" />
+        </LinearLayout>
 
         <TextView
             android:id="@+id/title"
             android:layout_width="0dp" android:layout_height="wrap_content"
             android:layout_weight="1"
             android:ellipsize="end" android:maxLines="1"
-            android:paddingStart="10dp"
+            android:paddingStart="6dp"
             android:text="@string/panel_title"
             android:textColor="@color/accent"
-            android:textSize="15sp" android:textStyle="bold" />
+            android:textSize="14sp" android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/rankChip"
+            android:layout_width="wrap_content" android:layout_height="26dp"
+            android:layout_marginEnd="2dp"
+            android:background="@drawable/search_bg"
+            android:gravity="center"
+            android:paddingHorizontal="8dp"
+            android:textColor="@color/text_primary"
+            android:textSize="11.5sp" />
 
         <ImageButton
             android:id="@+id/btnRefresh"
-            android:layout_width="38dp" android:layout_height="38dp"
+            android:layout_width="36dp" android:layout_height="36dp"
             android:background="?attr/selectableItemBackgroundBorderless"
             android:contentDescription="@string/refresh"
             android:src="@drawable/ic_refresh" />
 
         <ImageButton
             android:id="@+id/btnClose"
-            android:layout_width="38dp" android:layout_height="38dp"
+            android:layout_width="36dp" android:layout_height="36dp"
             android:background="?attr/selectableItemBackgroundBorderless"
             android:contentDescription="@string/minimize"
             android:src="@drawable/ic_close_x" />
     </LinearLayout>
 
-    <LinearLayout
-        android:id="@+id/tabs"
-        android:layout_width="match_parent" android:layout_height="wrap_content"
-        android:orientation="horizontal"
-        android:paddingHorizontal="8dp" android:paddingTop="6dp">
-        <TextView android:id="@+id/tabCounter"
-            android:layout_width="0dp" android:layout_height="30dp" android:layout_weight="1"
-            android:layout_marginEnd="4dp"
-            android:gravity="center" android:text="@string/tab_counter"
-            android:textColor="@color/text_primary" android:textSize="13sp" android:textStyle="bold" />
-        <TextView android:id="@+id/tabTeam"
-            android:layout_width="0dp" android:layout_height="30dp" android:layout_weight="1"
-            android:layout_marginEnd="4dp"
-            android:gravity="center" android:text="@string/tab_team"
-            android:textColor="@color/text_primary" android:textSize="13sp" android:textStyle="bold" />
-        <TextView android:id="@+id/tabFirstPick"
-            android:layout_width="0dp" android:layout_height="30dp" android:layout_weight="1"
-            android:gravity="center" android:text="@string/tab_first_pick"
-            android:textColor="@color/text_primary" android:textSize="13sp" android:textStyle="bold" />
-    </LinearLayout>
-
-    <!-- Rank filter: All / Epic / Legend / Mythic / Honor / Glory -->
+    <!-- Rank options, only while choosing -->
     <HorizontalScrollView
         android:id="@+id/rankScroll"
         android:layout_width="match_parent" android:layout_height="wrap_content"
         android:paddingHorizontal="8dp"
-        android:scrollbars="none">
+        android:scrollbars="none"
+        android:visibility="gone">
         <LinearLayout
             android:id="@+id/rankBar"
             android:layout_width="wrap_content" android:layout_height="wrap_content"
@@ -85,55 +94,77 @@
     <TextView
         android:id="@+id/status"
         android:layout_width="match_parent" android:layout_height="wrap_content"
-        android:paddingHorizontal="12dp" android:paddingTop="3dp"
+        android:paddingHorizontal="10dp" android:paddingTop="2dp"
         android:textColor="@color/text_secondary"
         android:textSize="10.5sp" />
 
-    <!-- Hero search + list -->
+    <!-- Draft page. Orientation is set in code: side by side in landscape, stacked in portrait. -->
     <LinearLayout
         android:id="@+id/listContainer"
         android:layout_width="match_parent" android:layout_height="0dp"
         android:layout_weight="1"
         android:orientation="vertical">
 
-        <EditText
-            android:id="@+id/search"
-            android:layout_width="match_parent" android:layout_height="36dp"
-            android:layout_marginHorizontal="8dp" android:layout_marginTop="4dp"
-            android:background="@drawable/search_bg"
-            android:hint="@string/search_hint"
-            android:imeOptions="actionSearch|flagNoExtractUi"
-            android:importantForAutofill="no"
-            android:inputType="textNoSuggestions"
-            android:paddingHorizontal="12dp"
-            android:singleLine="true"
-            android:textColor="@color/text_primary"
-            android:textColorHint="@color/text_secondary"
-            android:textSize="13sp" />
-
-        <TextView
-            android:id="@+id/pickHint"
+        <ScrollView
+            android:id="@+id/draftScroll"
             android:layout_width="match_parent" android:layout_height="wrap_content"
-            android:paddingHorizontal="12dp" android:paddingTop="4dp"
-            android:text="@string/team_pick_hint"
-            android:textColor="@color/accent" android:textSize="11.5sp"
-            android:visibility="gone" />
+            android:scrollbars="none">
+            <LinearLayout
+                android:id="@+id/draftTop"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:paddingHorizontal="8dp" android:paddingBottom="4dp" />
+        </ScrollView>
 
-        <TextView
-            android:id="@+id/emptyText"
-            android:layout_width="match_parent" android:layout_height="wrap_content"
-            android:padding="12dp"
-            android:textColor="@color/text_secondary" android:textSize="12sp"
-            android:visibility="gone" />
+        <LinearLayout
+            android:id="@+id/gridCol"
+            android:layout_width="match_parent" android:layout_height="0dp"
+            android:layout_weight="1"
+            android:orientation="vertical">
 
-        <androidx.recyclerview.widget.RecyclerView
-            android:id="@+id/heroList"
-            android:layout_width="match_parent" android:layout_height="match_parent"
-            android:clipToPadding="false"
-            android:paddingVertical="6dp" />
+            <HorizontalScrollView
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:paddingHorizontal="6dp" android:paddingTop="2dp"
+                android:scrollbars="none">
+                <LinearLayout
+                    android:id="@+id/roleBar"
+                    android:layout_width="wrap_content" android:layout_height="wrap_content"
+                    android:orientation="horizontal" />
+            </HorizontalScrollView>
+
+            <EditText
+                android:id="@+id/search"
+                android:layout_width="match_parent" android:layout_height="32dp"
+                android:layout_marginHorizontal="6dp" android:layout_marginTop="3dp"
+                android:background="@drawable/search_bg"
+                android:hint="@string/search_hint"
+                android:imeOptions="actionDone|flagNoExtractUi|flagNoFullscreen"
+                android:importantForAutofill="no"
+                android:inputType="textNoSuggestions"
+                android:paddingHorizontal="10dp"
+                android:singleLine="true"
+                android:textColor="@color/text_primary"
+                android:textColorHint="@color/text_secondary"
+                android:textSize="13sp"
+                android:visibility="gone" />
+
+            <TextView
+                android:id="@+id/emptyText"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:padding="8dp"
+                android:textColor="@color/text_secondary" android:textSize="12sp"
+                android:visibility="gone" />
+
+            <androidx.recyclerview.widget.RecyclerView
+                android:id="@+id/heroList"
+                android:layout_width="match_parent" android:layout_height="match_parent"
+                android:clipToPadding="false"
+                android:paddingHorizontal="2dp" android:paddingVertical="2dp"
+                android:scrollbars="vertical" />
+        </LinearLayout>
     </LinearLayout>
 
-    <!-- Hero detail and First Pick pages are built in code -->
+    <!-- Hero detail, team and First Pick pages are built in code -->
     <ScrollView
         android:id="@+id/pageScroll"
         android:layout_width="match_parent" android:layout_height="0dp"
@@ -143,15 +174,14 @@
             android:id="@+id/pageContent"
             android:layout_width="match_parent" android:layout_height="wrap_content"
             android:orientation="vertical"
-            android:paddingHorizontal="10dp" android:paddingBottom="10dp" />
+            android:paddingHorizontal="10dp" android:paddingBottom="8dp" />
     </ScrollView>
 
     <TextView
         android:layout_width="match_parent" android:layout_height="wrap_content"
         android:gravity="center"
-        android:paddingVertical="2dp"
         android:text="@string/data_credit"
         android:textColor="#80C5CBD8"
-        android:textSize="9sp" />
+        android:textSize="8.5sp" />
 </LinearLayout>
 </com.mlbb.counteroverlay.overlay.BackAwareFrame>

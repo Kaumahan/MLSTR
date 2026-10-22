@@ -7,8 +7,11 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.content.res.Configuration
 import android.graphics.PixelFormat
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.provider.Settings
 import android.text.Editable
 import android.text.TextWatcher
@@ -31,7 +34,7 @@ import androidx.core.app.ServiceCompat
 import androidx.core.content.getSystemService
 import androidx.lifecycle.LifecycleService
 import androidx.lifecycle.lifecycleScope
-import androidx.recyclerview.widget.LinearLayoutManager
+import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.mlbb.counteroverlay.R
 import com.mlbb.counteroverlay.data.DraftAdvisor
@@ -55,13 +58,14 @@ import kotlin.math.min
 
 /**
  * Floating bubble over any app (including Mobile Legends).
- *  - Tap: open the panel (search enemy hero -> counters by lane, builds, synergies; First Pick tab).
+ *  - Tap: open the panel. Draft tab: tap enemy portraits as they're picked -> instant best
+ *    picks for your lane. Hold a portrait for full details. First Pick tab: best blind picks.
  *  - Drag: move it; it snaps to the nearest screen edge.
  *  - Drag onto the X at the bottom centre: close the bubble.
  */
 class FloatingOverlayService : LifecycleService() {
 
-    private enum class Tab { COUNTER, TEAM, FIRST_PICK }
+    private enum class Tab { DRAFT, FIRST_PICK }
 
     private lateinit var wm: WindowManager
     private val repository by lazy { ServiceLocator.heroRepository(this) }
@@ -78,7 +82,7 @@ class FloatingOverlayService : LifecycleService() {
     // State
     private var roster = Loadable<Roster>()
     private val heroes get() = roster.value?.heroes.orEmpty()
-    private var tab = Tab.COUNTER
+    private var tab = Tab.DRAFT
     private var query = ""
     private val stack = ArrayDeque<HeroUi>()               // hero detail back stack
     private var matchups = Loadable<List<CounterStat>>()
@@ -91,9 +95,17 @@ class FloatingOverlayService : LifecycleService() {
     private var rates = Loadable<Map<Int, RateUi>>()
     private var ratesJob: Job? = null
 
-    // Enemy team (up to 5) for the Team tab
+    // Enemy picks (up to 5) in the Draft tab
     private val team = mutableListOf<Int>()
-    private var pickingForTeam = false
+    private var teamPage = false                  // full "vs enemy team" page
+    private var roleFilter = FILTER_ALL           // grid filter: Recent / All / a role
+    private var searchVisible = false
+    private val recent = ArrayDeque<Int>()        // recently tapped enemies, newest first
+    private var rankExpanded = false
+
+    // Coalesce many data updates into one redraw per frame (less work while the game runs).
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private var renderPosted = false
     private val teamMatchups = mutableMapOf<Int, Loadable<List<CounterStat>>>()
     private val teamJobs = mutableMapOf<Int, Job>()
 
@@ -104,11 +116,11 @@ class FloatingOverlayService : LifecycleService() {
     private var matchupJob: Job? = null
     private var buildJob: Job? = null
 
-    private val adapter = HeroAdapter(
-        nameOf = { roster.value?.byId?.get(it)?.name },
-        isInTeam = { it in team },
-        onTeamToggle = { toggleTeam(it) },
-    ) { hero -> if (pickingForTeam) { addToTeam(hero); pickingForTeam = false; render() } else openHero(hero) }
+    private val gridAdapter = HeroGridAdapter(
+        isSelected = { it in team },
+        onTap = { toggleEnemy(it) },
+        onHold = { openHero(it) },
+    )
 
     // ================================================================ lifecycle
 
@@ -166,45 +178,145 @@ class FloatingOverlayService : LifecycleService() {
 
     // ================================================================ rendering
 
+    /** Schedules a redraw; many calls in the same frame collapse into one. */
     private fun render() {
+        if (panel == null || renderPosted) return
+        renderPosted = true
+        mainHandler.post { renderPosted = false; doRender() }
+    }
+
+    private fun doRender() {
         val p = panel ?: return
         val hero = stack.lastOrNull()
-        val showList = hero == null && (tab == Tab.COUNTER || (tab == Tab.TEAM && pickingForTeam))
+        val showDraft = hero == null && tab == Tab.DRAFT && !teamPage
 
-        p.findViewById<View>(R.id.listContainer).visibility = if (showList) View.VISIBLE else View.GONE
-        p.findViewById<View>(R.id.pageScroll).visibility = if (showList) View.GONE else View.VISIBLE
-        p.findViewById<View>(R.id.btnBack).visibility = if (hero != null || (tab == Tab.TEAM && pickingForTeam)) View.VISIBLE else View.GONE
-        p.findViewById<View>(R.id.pickHint).visibility = if (showList && tab == Tab.TEAM) View.VISIBLE else View.GONE
-        p.findViewById<TextView>(R.id.tabTeam).text = if (team.isEmpty()) getString(R.string.tab_team) else "${getString(R.string.tab_team)} (${team.size})"
+        p.findViewById<View>(R.id.listContainer).visibility = if (showDraft) View.VISIBLE else View.GONE
+        p.findViewById<View>(R.id.pageScroll).visibility = if (showDraft) View.GONE else View.VISIBLE
+        p.findViewById<View>(R.id.btnBack).visibility = if (hero != null || teamPage) View.VISIBLE else View.GONE
+        p.findViewById<View>(R.id.tabs).visibility = if (hero != null || teamPage) View.GONE else View.VISIBLE
+        // Title doubles as the flexible spacer in the header; empty while the tabs are shown.
+        p.findViewById<TextView>(R.id.title).text = hero?.name ?: if (teamPage) "Vs enemy team" else ""
+        // Status line only when it matters (loading / offline / error): saves a row.
+        val r = roster
+        val showStatus = r.isLoading || r.error != null || r.value == null || r.source == DataSource.BUNDLED
+        p.findViewById<TextView>(R.id.status).apply {
+            visibility = if (showStatus) View.VISIBLE else View.GONE
+            text = statusText()
+        }
         renderRankBar(p)
-        p.findViewById<View>(R.id.tabs).visibility = if (hero != null) View.GONE else View.VISIBLE
-        p.findViewById<TextView>(R.id.title).text = hero?.name ?: getString(R.string.panel_title)
-        p.findViewById<TextView>(R.id.status).text = statusText()
         styleTabs(p)
 
         when {
-            showList -> renderList(p)
+            showDraft -> renderDraft(p)
             hero != null -> renderDetail(p, hero)
-            tab == Tab.TEAM -> renderTeam(p)
+            teamPage -> renderTeam(p)
             else -> renderFirstPick(p)
         }
     }
 
     private fun styleTabs(p: View) {
-        val counter = p.findViewById<TextView>(R.id.tabCounter)
-        val first = p.findViewById<TextView>(R.id.tabFirstPick)
-        p.findViewById<TextView>(R.id.tabTeam).setBackgroundResource(if (tab == Tab.TEAM) R.drawable.tab_selected else 0)
-        counter.setBackgroundResource(if (tab == Tab.COUNTER) R.drawable.tab_selected else 0)
-        first.setBackgroundResource(if (tab == Tab.FIRST_PICK) R.drawable.tab_selected else 0)
+        p.findViewById<TextView>(R.id.tabCounter).setBackgroundResource(if (tab == Tab.DRAFT) R.drawable.tab_selected else 0)
+        p.findViewById<TextView>(R.id.tabFirstPick).setBackgroundResource(if (tab == Tab.FIRST_PICK) R.drawable.tab_selected else 0)
     }
 
-    private fun renderList(p: View) {
-        val result = HeroSearch.search(heroes, query)
-        adapter.submitList(result)
-        p.findViewById<TextView>(R.id.emptyText).apply {
-            visibility = if (result.isEmpty() && heroes.isNotEmpty()) View.VISIBLE else View.GONE
-            text = "No hero found for \"${query.trim()}\". Check the spelling, or search a role like Mage or a lane like Gold."
+    // ---------------------------------------------------------------- draft page
+
+    private fun renderDraft(p: View) {
+        val r = roster.value
+        val top = p.findViewById<LinearLayout>(R.id.draftTop).apply { removeAllViews() }
+        // Narrow left column in landscape: labels go on their own line so chips fit.
+        val stacked = isLandscape()
+        if (stacked) top.addView(ui.laneLabel("Enemy picks", false))
+        top.addView(ui.enemyRow(team.map { name(it) to r?.byId?.get(it)?.icon }, MAX_TEAM,
+            onRemove = { i -> removeFromTeam(team[i]) },
+            onHold = { i -> r?.byId?.get(team[i])?.let(::openHero) },
+            onClear = ::clearTeam, inlineLabel = !stacked))
+        top.laneSelector()
+        when {
+            r == null -> top.addView(ui.note("Loading heroes…"))
+            team.isEmpty() -> top.addView(ui.note(if (isLandscape()) "Tap the enemy picks in the grid →  (hold = details)" else "Tap the enemy picks below ↓  (hold = details)"))
+            myLane == null -> top.addView(ui.note("Choose your lane to see your best pick."))
+            else -> renderDraftResults(top, r, myLane!!)
         }
+        renderRoleBar(p)
+        renderGrid(p)
+    }
+
+    /** The answer, right under the picks: your 3 best heroes for your lane. */
+    private fun renderDraftResults(top: LinearLayout, r: Roster, lane: Lane) {
+        val loading = team.any { teamMatchups[it]?.value == null && teamMatchups[it]?.isLoading != false }
+        if (team.size == 1) {
+            val enemy = r.byId[team[0]] ?: return
+            val list = teamMatchups[enemy.id]?.value
+            if (list.isNullOrEmpty()) { top.addView(ui.note(if (loading) "Loading…" else teamMatchups[enemy.id]?.error ?: "No data for ${enemy.name} yet.")); return }
+            val picks = DraftAdvisor.counterPicks(enemy, list, r).filter { r.byId[it.heroId]?.laneEnums?.contains(lane) == true }.take(3)
+            top.addView(ui.laneLabel("Best ${lane.label} picks vs ${enemy.name}", true))
+            if (picks.isEmpty()) { top.addView(ui.note("No strong ${lane.label} counter to ${enemy.name}.")); return }
+            top.addView(ui.pickCards(picks.map { Triple(name(it.heroId), r.byId[it.heroId]?.icon, if (it.edge > 0) signedPct(it.edge) else "★ guide") },
+                onClick = { i -> r.byId[picks[i].heroId]?.let(::openHero) },
+                onMore = { openHero(enemy) }))
+        } else {
+            val tables = team.associateWith { teamMatchups[it]?.value.orEmpty() }
+            val picks = DraftAdvisor.teamCounters(team, tables, r)
+                .filter { it.score > 0 && r.byId[it.heroId]?.laneEnums?.contains(lane) == true }.take(3)
+            top.addView(ui.laneLabel("Best ${lane.label} picks vs ${team.size} enemies", true))
+            when {
+                picks.isEmpty() && loading -> top.addView(ui.note("Loading…"))
+                picks.isEmpty() -> top.addView(ui.note("No ${lane.label} hero is good into this whole team."))
+                else -> top.addView(ui.pickCards(picks.map { Triple(name(it.heroId), r.byId[it.heroId]?.icon, "${signedPct(it.averageEdge)} · ${it.beats}/${it.enemies}") },
+                    onClick = { i -> r.byId[picks[i].heroId]?.let(::openHero) },
+                    onMore = { teamPage = true; render() }))
+            }
+        }
+    }
+
+    private fun renderRoleBar(p: View) {
+        val bar = p.findViewById<LinearLayout>(R.id.roleBar).apply { removeAllViews() }
+        val filters = buildList { add(FILTER_SEARCH); if (recent.isNotEmpty()) add(FILTER_RECENT); add(FILTER_ALL); addAll(ROLES) }
+        val selected = if (searchVisible) 0 else filters.indexOf(roleFilter)
+        bar.addView(ui.chips(filters, selected) { i ->
+            if (filters[i] == FILTER_SEARCH) setSearchVisible(!searchVisible)
+            else { roleFilter = filters[i]; if (searchVisible) setSearchVisible(false); render() }
+        })
+    }
+
+    private fun renderGrid(p: View) {
+        val base = when {
+            searchVisible && query.isNotBlank() -> HeroSearch.search(heroes, query)
+            roleFilter == FILTER_RECENT -> recent.mapNotNull { roster.value?.byId?.get(it) }
+            roleFilter == FILTER_ALL -> heroes
+            else -> heroes.filter { roleFilter in it.roles }
+        }
+        gridAdapter.submitList(base)
+        p.findViewById<TextView>(R.id.emptyText).apply {
+            visibility = if (base.isEmpty() && heroes.isNotEmpty()) View.VISIBLE else View.GONE
+            text = if (searchVisible) "No hero found for \"${query.trim()}\"." else "Nothing here yet."
+        }
+    }
+
+    /** The panel only takes keyboard focus while searching, so the game keeps focus otherwise. */
+    private fun setSearchVisible(show: Boolean) {
+        searchVisible = show
+        val p = panel ?: return
+        val search = p.findViewById<EditText>(R.id.search)
+        search.visibility = if (show) View.VISIBLE else View.GONE
+        setPanelFocusable(show)
+        val imm = getSystemService<android.view.inputmethod.InputMethodManager>()
+        if (show) {
+            search.requestFocus()
+            search.post { imm?.showSoftInput(search, 0) }
+        } else {
+            query = ""; search.setText("")
+            imm?.hideSoftInputFromWindow(p.windowToken, 0)
+        }
+        render()
+    }
+
+    private fun setPanelFocusable(focusable: Boolean) {
+        val p = panel ?: return
+        panelParams.flags = if (focusable) panelParams.flags and WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE.inv()
+        else panelParams.flags or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+        runCatching { wm.updateViewLayout(p, panelParams) }
     }
 
     private fun statusText(): String {
@@ -245,6 +357,9 @@ class FloatingOverlayService : LifecycleService() {
 
     private fun loadUiPrefs() {
         myLane = Lane.from(prefs.getString("my_lane", null))
+        recent.clear()
+        prefs.getString("recent", null)?.split(',')?.mapNotNull { it.toIntOrNull() }?.let { recent.addAll(it) }
+        if (recent.isNotEmpty()) roleFilter = FILTER_RECENT
         expanded.clear()
         expanded += prefs.getStringSet("expanded", setOf(SEC_COUNTERS, SEC_TEAM_BEST))!!
     }
@@ -266,7 +381,9 @@ class FloatingOverlayService : LifecycleService() {
 
     private fun LinearLayout.laneSelector(highlight: List<Lane> = emptyList()) {
         val lanes = Lane.entries
-        addView(ui.chips(lanes.map { if (it in highlight) "${it.label}•" else it.label }, lanes.indexOf(myLane), "My lane") { i ->
+        val stacked = isLandscape() && stack.isEmpty() && tab == Tab.DRAFT && !teamPage
+        if (stacked) addView(ui.laneLabel("My lane", false))
+        addView(ui.chips(lanes.map { if (it in highlight) "${it.label}•" else it.label }, lanes.indexOf(myLane), if (stacked) null else "My lane", fill = stacked) { i ->
             myLane = if (myLane == lanes[i]) null else lanes[i]   // tap again to clear
             prefs.edit().putString("my_lane", myLane?.apiKey).apply()
             render()
@@ -421,13 +538,7 @@ class FloatingOverlayService : LifecycleService() {
     private fun renderTeam(p: View) {
         val c = pageContent(p)
         val r = roster.value ?: run { c.addView(ui.note("Loading…")); return }
-        c.addView(ui.teamStrip(team.map { id -> name(id) to r.byId[id]?.icon }, MAX_TEAM,
-            onRemove = { i -> removeFromTeam(team[i]) },
-            onAdd = { pickingForTeam = true; render() }))
-        if (team.isEmpty()) {
-            c.addView(ui.note("Add the enemy picks (tap + Add, or \"+ Team\" in the Counter list) to find heroes that are good against all of them."))
-            return
-        }
+        if (team.isEmpty()) { teamPage = false; render(); return }
         c.laneSelector()
 
         val loading = team.any { teamMatchups[it]?.value == null && teamMatchups[it]?.isLoading != false }
@@ -471,23 +582,34 @@ class FloatingOverlayService : LifecycleService() {
             details, hero?.let { { openHero(it) } })
     }
 
-    private fun toggleTeam(hero: HeroUi) {
+    private fun toggleEnemy(hero: HeroUi) {
         if (hero.id in team) removeFromTeam(hero.id) else addToTeam(hero)
-        render()
     }
 
     private fun addToTeam(hero: HeroUi) {
         if (hero.id in team || team.size >= MAX_TEAM) return
         team += hero.id
+        recent.remove(hero.id); recent.addFirst(hero.id)
+        while (recent.size > MAX_RECENT) recent.removeLast()
+        prefs.edit().putString("recent", recent.joinToString(",")).apply()
         loadTeamMatchup(hero.id, force = false)
-        adapter.notifyDataSetChanged()
+        gridAdapter.refreshSelection()
+        render()
     }
 
     private fun removeFromTeam(id: Int) {
         team.remove(id)
         teamJobs.remove(id)?.cancel()
         teamMatchups.remove(id)
-        adapter.notifyDataSetChanged()
+        gridAdapter.refreshSelection()
+        render()
+    }
+
+    private fun clearTeam() {
+        team.toList().forEach { teamJobs.remove(it)?.cancel(); teamMatchups.remove(it) }
+        team.clear()
+        teamPage = false
+        gridAdapter.refreshSelection()
         render()
     }
 
@@ -501,10 +623,19 @@ class FloatingOverlayService : LifecycleService() {
 
     // ================================================================ rank filter
 
+    /** Rank is one small chip in the header; tap it to show the options underneath. */
     private fun renderRankBar(p: View) {
+        p.findViewById<TextView>(R.id.rankChip).apply {
+            text = "${rank.shortLabel} ▾"
+            contentDescription = "Rank filter: ${rank.label}"
+            setOnClickListener { rankExpanded = !rankExpanded; render() }
+        }
+        p.findViewById<View>(R.id.rankScroll).visibility = if (rankExpanded) View.VISIBLE else View.GONE
         val bar = p.findViewById<LinearLayout>(R.id.rankBar)
         bar.removeAllViews()
-        bar.addView(ui.chips(Rank.entries.map { it.shortLabel }, Rank.entries.indexOf(rank)) { i -> setRank(Rank.entries[i]) })
+        if (rankExpanded) bar.addView(ui.chips(Rank.entries.map { it.shortLabel }, Rank.entries.indexOf(rank), "Rank") { i ->
+            rankExpanded = false; setRank(Rank.entries[i]); render()
+        })
     }
 
     private fun setRank(newRank: Rank) {
@@ -531,7 +662,7 @@ class FloatingOverlayService : LifecycleService() {
 
     /** Back: previous hero -> tab root -> minimize panel. */
     private fun goBack() {
-        if (stack.isEmpty() && pickingForTeam) { pickingForTeam = false; hideKeyboard(); render(); return }
+        if (stack.isEmpty() && teamPage) { teamPage = false; render(); return }
         if (stack.isNotEmpty()) {
             stack.removeLast()
             stack.lastOrNull()?.let { buildLane = null; loadHeroData(it, force = false) }
@@ -543,7 +674,8 @@ class FloatingOverlayService : LifecycleService() {
     }
 
     private fun selectTab(t: Tab) {
-        tab = t; stack.clear(); pickingForTeam = false
+        tab = t; stack.clear(); teamPage = false
+        if (searchVisible) setSearchVisible(false)
         if (t == Tab.FIRST_PICK && rank != Rank.ALL && rates.value == null && !rates.isLoading) loadRates()
         matchupJob?.cancel(); buildJob?.cancel()
         hideKeyboard()
@@ -655,26 +787,38 @@ class FloatingOverlayService : LifecycleService() {
     private fun openPanel() {
         val view = LayoutInflater.from(themed).inflate(R.layout.overlay_panel, null) as BackAwareFrame
         val dm = resources.displayMetrics
-        val w = min(ui.dp(330), dm.widthPixels - ui.dp(24))
-        val h = min(ui.dp(520), (dm.heightPixels * 0.8f).toInt())
-        panelParams = baseParams(w, h, focusable = true).apply {
-            x = (dm.widthPixels - w) / 2
-            y = ui.dp(40)
+        val land = isLandscape()
+        // Landscape (how MLBB is played): wide and nearly full height, picks left + grid right.
+        // Portrait: narrow and stacked.
+        val w = if (land) min(ui.dp(600), (dm.widthPixels * 0.62f).toInt()) else min(ui.dp(340), dm.widthPixels - ui.dp(16))
+        val h = if (land) min(ui.dp(440), dm.heightPixels - ui.dp(12)) else min(ui.dp(540), (dm.heightPixels * 0.75f).toInt())
+        val suffix = if (land) "land" else "port"
+        panelParams = baseParams(w, h, focusable = false).apply {
+            // Default: left side in landscape, so the enemy picks on the right stay visible.
+            x = prefs.getInt("panel_x_$suffix", if (land) ui.dp(8) else (dm.widthPixels - w) / 2)
+                .coerceIn(0, (dm.widthPixels - w).coerceAtLeast(0))
+            y = prefs.getInt("panel_y_$suffix", if (land) (dm.heightPixels - h) / 2 else ui.dp(40))
+                .coerceIn(0, (dm.heightPixels - h).coerceAtLeast(0))
             softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
         }
+        configureDraftLayout(view, land)
         view.onBack = ::goBack
 
         view.findViewById<RecyclerView>(R.id.heroList).apply {
-            layoutManager = LinearLayoutManager(context)
-            adapter = this@FloatingOverlayService.adapter
+            val gridWidth = if (land) (w * GRID_SHARE_LAND).toInt() else w
+            val span = ((gridWidth - ui.dp(6)) / ui.dp(52)).coerceIn(4, 8)
+            layoutManager = GridLayoutManager(context, span)
+            adapter = gridAdapter
             setHasFixedSize(true)
+            itemAnimator = null              // no change animations: cheaper while gaming
+            setItemViewCacheSize(30)
         }
         view.findViewById<EditText>(R.id.search).apply {
             setText(query)
             addTextChangedListener(object : TextWatcher {
                 override fun afterTextChanged(s: Editable?) {
                     query = s?.toString().orEmpty()
-                    if (stack.isEmpty() && (tab == Tab.COUNTER || pickingForTeam)) renderList(view)   // instant, every keystroke
+                    if (stack.isEmpty() && tab == Tab.DRAFT && searchVisible) renderGrid(view)   // instant, every keystroke
                 }
                 override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) = Unit
                 override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) = Unit
@@ -688,18 +832,19 @@ class FloatingOverlayService : LifecycleService() {
             team.forEach { loadTeamMatchup(it, force = true) }
             if (rank != Rank.ALL) loadRates(force = true)
         }
-        view.findViewById<View>(R.id.tabCounter).setOnClickListener { selectTab(Tab.COUNTER) }
+        view.findViewById<View>(R.id.tabCounter).setOnClickListener { selectTab(Tab.DRAFT) }
         view.findViewById<View>(R.id.tabFirstPick).setOnClickListener { selectTab(Tab.FIRST_PICK) }
-        view.findViewById<View>(R.id.tabTeam).setOnClickListener { selectTab(Tab.TEAM) }
         view.findViewById<View>(R.id.header).setOnTouchListener(PanelDragListener(view))
 
         wm.addView(view, panelParams)
         panel = view
-        render()
+        searchVisible = false
+        doRender()
     }
 
     private fun closePanel() {
         hideKeyboard()
+        searchVisible = false; query = ""
         panel?.let { runCatching { wm.removeView(it) } }
         panel = null
     }
@@ -724,6 +869,10 @@ class FloatingOverlayService : LifecycleService() {
                     panelParams.y = startY + (e.rawY - downY).toInt()
                     runCatching { wm.updateViewLayout(view, panelParams) }
                 }
+                MotionEvent.ACTION_UP -> {   // remember where the player likes it
+                    val suffix = if (isLandscape()) "land" else "port"
+                    prefs.edit().putInt("panel_x_$suffix", panelParams.x).putInt("panel_y_$suffix", panelParams.y).apply()
+                }
             }
             return true
         }
@@ -731,12 +880,42 @@ class FloatingOverlayService : LifecycleService() {
 
     // ================================================================ helpers
 
+    private fun isLandscape() = resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+
+    /** Side by side in landscape (picks + results | grid), stacked in portrait. */
+    private fun configureDraftLayout(root: View, land: Boolean) {
+        val container = root.findViewById<LinearLayout>(R.id.listContainer)
+        val left = root.findViewById<View>(R.id.draftScroll)
+        val grid = root.findViewById<View>(R.id.gridCol)
+        if (land) {
+            container.orientation = LinearLayout.HORIZONTAL
+            left.layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f - GRID_SHARE_LAND)
+            grid.layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, GRID_SHARE_LAND)
+        } else {
+            container.orientation = LinearLayout.VERTICAL
+            left.layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+            grid.layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f)
+        }
+    }
+
+    /** Rotating the phone: rebuild the panel for the new shape and keep the bubble on screen. */
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        if (panel != null) { closePanel(); openPanel() }
+        bubble?.let { b ->
+            bubbleParams.y = bubbleParams.y.coerceIn(0, (resources.displayMetrics.heightPixels - b.height).coerceAtLeast(0))
+            snapBubbleToEdge()
+        }
+    }
+
     private fun baseParams(w: Int, h: Int, focusable: Boolean) = WindowManager.LayoutParams(
         w, h,
         WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
         // NOT_TOUCH_MODAL: touches outside our windows still reach the game.
         WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
             WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
+            // GPU-render our windows; without this, Service windows draw in software (CPU).
+            WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED or
             (if (focusable) 0 else WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE),
         PixelFormat.TRANSLUCENT,
     ).apply { gravity = Gravity.TOP or Gravity.START }
@@ -772,6 +951,12 @@ class FloatingOverlayService : LifecycleService() {
         private const val CHANNEL_ID = "overlay"
         private const val NOTIF_ID = 42
         private const val MAX_TEAM = 5
+        private const val MAX_RECENT = 18
+        private const val GRID_SHARE_LAND = 0.58f
+        private const val FILTER_SEARCH = "🔍"
+        private const val FILTER_RECENT = "Recent"
+        private const val FILTER_ALL = "All"
+        private val ROLES = listOf("Tank", "Fighter", "Assassin", "Mage", "Marksman", "Support")
         private const val SEC_COUNTERS = "counters"
         private const val SEC_COUNTERS_MORE = "counters_more"
         private const val SEC_AVOID = "avoid"

@@ -15,15 +15,16 @@ import coil.transform.CircleCropTransformation
 import coil.transform.RoundedCornersTransformation
 import com.mlbb.counteroverlay.R
 
+// No crossfade: animations cost frames while a game is running underneath.
 fun ImageView.loadHero(url: String?) = load(url) {
-    crossfade(true)
+    crossfade(false)
     placeholder(R.drawable.hero_placeholder)
     error(R.drawable.hero_placeholder)
     transformations(CircleCropTransformation())
 }
 
 fun ImageView.loadItem(url: String?) = load(url) {
-    crossfade(true)
+    crossfade(false)
     placeholder(R.drawable.item_placeholder)
     error(R.drawable.item_placeholder)
     transformations(RoundedCornersTransformation(8f))
@@ -116,28 +117,65 @@ class OverlayViews(private val ctx: Context) {
         }
     }
 
-    /** Enemy team strip: icons with a remove (×) badge, plus an "add" slot. */
-    fun teamStrip(members: List<Pair<String, String?>>, max: Int, onRemove: (Int) -> Unit, onAdd: () -> Unit): View =
+    /**
+     * Enemy picks row: 5 small slots. Tap a pick to remove it, hold it for its details.
+     * Empty slots are dashed placeholders so it's obvious where picks go.
+     */
+    fun enemyRow(
+        members: List<Pair<String, String?>>, max: Int,
+        onRemove: (Int) -> Unit, onHold: (Int) -> Unit, onClear: () -> Unit,
+        inlineLabel: Boolean = true,
+    ): View = LinearLayout(ctx).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+        setPadding(0, dp(4), 0, dp(2))
+        if (inlineLabel) addView(text("Enemy", 11.5f, R.color.text_secondary, bold = true).apply { setPadding(0, 0, dp(6), 0) })
+        for (i in 0 until max) {
+            val m = members.getOrNull(i)
+            addView(ImageView(ctx).apply {
+                scaleType = ImageView.ScaleType.CENTER_CROP
+                if (m != null) {
+                    loadHero(m.second)
+                    contentDescription = "${m.first}, tap to remove, hold for details"
+                    setOnClickListener { onRemove(i) }
+                    setOnLongClickListener { onHold(i); true }
+                } else {
+                    setImageResource(R.drawable.hero_placeholder)
+                    alpha = 0.35f
+                    importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+                }
+            }, LinearLayout.LayoutParams(dp(30), dp(30)).apply { marginEnd = dp(4) })
+        }
+        if (members.isNotEmpty()) addView(text("Clear", 11.5f, R.color.accent, bold = true).apply {
+            maxLines = 1
+            setPadding(dp(4), dp(6), dp(2), dp(6)); setOnClickListener { onClear() }
+        })
+    }
+
+    /** Up to 3 result cards side by side, plus a "More" button. */
+    fun pickCards(picks: List<Triple<String, String?, String>>, onClick: (Int) -> Unit, onMore: (() -> Unit)?): View =
         LinearLayout(ctx).apply {
             orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(0, dp(4), 0, dp(4))
-            members.forEachIndexed { i, (name, icon) ->
+            setPadding(0, dp(2), 0, dp(2))
+            picks.forEachIndexed { i, (name, icon, metric) ->
                 addView(LinearLayout(ctx).apply {
                     orientation = LinearLayout.VERTICAL
                     gravity = Gravity.CENTER_HORIZONTAL
-                    contentDescription = "Remove $name"
-                    setOnClickListener { onRemove(i) }
+                    setBackgroundResource(R.drawable.card_bg)
+                    setPadding(dp(4), dp(5), dp(4), dp(5))
+                    contentDescription = "$name, $metric"
+                    setOnClickListener { onClick(i) }
                     addView(ImageView(ctx).apply { loadHero(icon) }, LinearLayout.LayoutParams(dp(34), dp(34)))
-                    addView(text("$name ✕", 9.5f, R.color.text_secondary).apply { maxLines = 1 })
-                }, LinearLayout.LayoutParams(dp(50), WRAP_CONTENT))
+                    addView(text(name, 11f, bold = true).apply { maxLines = 1; gravity = Gravity.CENTER })
+                    addView(text(metric, 10.5f, bold = true).apply { setTextColor(good); gravity = Gravity.CENTER })
+                }, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f).apply { marginEnd = dp(5) })
             }
-            if (members.size < max) {
-                addView(text("+ Add", 12f, R.color.accent, bold = true).apply {
+            onMore?.let { more ->
+                addView(text("More\n›", 11f, R.color.accent, bold = true).apply {
                     gravity = Gravity.CENTER
-                    setBackgroundResource(R.drawable.tab_selected)
-                    setOnClickListener { onAdd() }
-                }, LinearLayout.LayoutParams(dp(50), dp(34)))
+                    setBackgroundResource(R.drawable.search_bg)
+                    setOnClickListener { more() }
+                }, LinearLayout.LayoutParams(dp(44), MATCH_PARENT))
             }
         }
 
@@ -168,18 +206,21 @@ class OverlayViews(private val ctx: Context) {
     }
 
     /** Row of small toggle chips. [selected] = -1 for none. */
-    fun chips(labels: List<String>, selected: Int, prefix: String? = null, onPick: (Int) -> Unit): View = LinearLayout(ctx).apply {
+    fun chips(labels: List<String>, selected: Int, prefix: String? = null, fill: Boolean = false, onPick: (Int) -> Unit): View = LinearLayout(ctx).apply {
         orientation = LinearLayout.HORIZONTAL
         gravity = Gravity.CENTER_VERTICAL
         setPadding(0, dp(3), 0, dp(1))
         prefix?.let { addView(text(it, 11.5f, R.color.text_secondary).apply { setPadding(0, 0, dp(6), 0) }) }
         labels.forEachIndexed { i, label ->
-            addView(text(label, 12f, bold = i == selected).apply {
-                setPadding(dp(9), dp(4), dp(9), dp(4))
+            addView(text(label, if (fill) 10.5f else 12f, bold = i == selected).apply {
+                gravity = Gravity.CENTER
+                maxLines = 1
+                setPadding(if (fill) dp(2) else dp(8), dp(4), if (fill) dp(2) else dp(8), dp(4))
                 setBackgroundResource(if (i == selected) R.drawable.tab_selected else R.drawable.search_bg)
                 contentDescription = "$label${if (i == selected) ", selected" else ""}"
                 setOnClickListener { onPick(i) }
-            }, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { marginEnd = dp(4) })
+            }, (if (fill) LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f) else LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT))
+                .apply { marginEnd = dp(4) })
         }
     }
 }

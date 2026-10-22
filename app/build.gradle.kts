@@ -27,8 +27,8 @@ android {
         applicationId = "com.mlbb.counteroverlay"
         minSdk = 26
         targetSdk = 36
-        versionCode = (project.findProperty("VERSION_CODE") as String?)?.toIntOrNull() ?: 7
-        versionName = "1.4.0"
+        versionCode = (project.findProperty("VERSION_CODE") as String?)?.toIntOrNull() ?: 9
+        versionName = "1.5.1"
         buildConfigField("String", "API_BASE_URL", "\"$apiBaseUrl\"")
     }
 

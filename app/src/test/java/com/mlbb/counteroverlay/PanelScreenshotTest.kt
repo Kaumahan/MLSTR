@@ -46,6 +46,8 @@ class PanelScreenshotTest {
 
     private fun field(svc: Any, name: String): Any? = svc.javaClass.getDeclaredField(name).apply { isAccessible = true }.get(svc)
 
+    private var prefix = ""
+
     private fun shot(svc: Any, file: String) {
         repeat(5) { ShadowLooper.idleMainLooper(); Thread.sleep(150) }
         val panel = field(svc, "panel") as View
@@ -55,10 +57,15 @@ class PanelScreenshotTest {
         panel.layout(0, 0, lp.width, lp.height)
         val bmp = Bitmap.createBitmap(lp.width, lp.height, Bitmap.Config.ARGB_8888)
         Canvas(bmp).apply { drawColor(0xFF3A4A3A.toInt()) }.also { panel.draw(it) }
-        File("build/screenshots").apply { mkdirs() }.resolve(file).outputStream().use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
+        File("build/screenshots").apply { mkdirs() }.resolve(prefix + file).outputStream().use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
     }
 
-    @Test fun renderPanels() {
+    @Test fun renderPortrait() { prefix = "port_"; renderPanels() }
+
+    /** Same screen shape as a typical phone in landscape, which is how MLBB is played. */
+    @Test @Config(qualifiers = "w844dp-h390dp-land-xhdpi") fun renderLandscape() { prefix = "land_"; renderPanels() }
+
+    private fun renderPanels() {
         shadowOf(ctx.getSystemService(android.app.AppOpsManager::class.java))
         org.robolectric.shadows.ShadowSettings.setCanDrawOverlays(true)
         val ser = ListSerializer(CounterStat.serializer())
@@ -67,28 +74,26 @@ class PanelScreenshotTest {
         seedCache("matchups_v2_17_all", json.encodeToString(ser, ApiParsers.parseMatchups(json, res("matchups_fanny.json"))))
         seedCache("matchups_v2_84_all", json.encodeToString(ser, ApiParsers.parseMatchups(json, res("matchups_84.json"))))
         seedCache("matchups_v2_1_all", json.encodeToString(ser, ApiParsers.parseMatchups(json, res("matchups_1.json"))))
-        ctx.getSharedPreferences("settings", 0).edit().putString("my_lane", "gold").commit()
+        ctx.getSharedPreferences("settings", 0).edit().clear().putString("my_lane", "gold").commit()
 
         val svc = Robolectric.buildService(FloatingOverlayService::class.java).create().get()
         repeat(10) { ShadowLooper.idleMainLooper(); Thread.sleep(200) }
         call(svc, "openPanel")
-        shot(svc, "1_list.png")
+        shot(svc, "1_draft_empty.png")
 
         @Suppress("UNCHECKED_CAST")
         val roster = (field(svc, "roster") as com.mlbb.counteroverlay.data.model.Loadable<com.mlbb.counteroverlay.data.model.Roster>).value!!
-        val lolita = roster.heroes.first { it.name == "Lolita" }
-        call(svc, "openHero", lolita)
-        shot(svc, "2_lolita_gold.png")
+        call(svc, "addToTeam", roster.byId[20]!!)          // Lolita
+        shot(svc, "2_draft_one_enemy.png")
 
-        call(svc, "toggle", "avoid")
-        call(svc, "toggle", "guide")
-        shot(svc, "3_lolita_sections_open.png")
+        listOf(17, 84).forEach { id -> call(svc, "addToTeam", roster.byId[id]!!) }   // + Fanny, Ling
+        shot(svc, "3_draft_three_enemies.png")
 
+        call(svc, "openHero", roster.byId[20]!!)
+        shot(svc, "4_lolita_detail.png")
         call(svc, "goBack")
+
         val tabs = svc.javaClass.declaredClasses.first { it.simpleName == "Tab" }.enumConstants
-        listOf(17, 84, 1).forEach { id -> call(svc, "addToTeam", roster.byId[id]!!) }
-        call(svc, "selectTab", tabs.first { it.toString() == "TEAM" })
-        shot(svc, "4_team.png")
         call(svc, "selectTab", tabs.first { it.toString() == "FIRST_PICK" })
         shot(svc, "5_first_pick.png")
     }
