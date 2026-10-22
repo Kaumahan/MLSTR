@@ -164,7 +164,7 @@ class FloatingOverlayService : LifecycleService() {
             else intent.getParcelableExtra(EXTRA_PROJECTION_DATA)
             if (resultCode == android.app.Activity.RESULT_OK && data != null) {
                 val mpm = getSystemService(MediaProjectionManager::class.java)
-                val mp = mpm.getMediaProjection(resultCode, data)
+                val mp = mpm.getMediaProjection(resultCode, data) ?: return START_NOT_STICKY
                 captureManager.start(mp)
                 // Pre-warm icon matcher after the roster is ready
                 lifecycleScope.launch(safe) {
