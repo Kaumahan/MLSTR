@@ -1,12 +1,15 @@
 package com.mlbb.counteroverlay.ui
 
+import android.app.Activity
 import android.content.ActivityNotFoundException
 import android.content.Intent
+import android.media.projection.MediaProjectionManager
 import android.net.Uri
 import android.os.Bundle
 import android.provider.Settings
 import android.widget.Button
 import android.widget.TextView
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.ViewCompat
@@ -27,6 +30,25 @@ class MainActivity : AppCompatActivity() {
     private var askedThisSession = false
     private var crashDialogOpen = false
 
+    /** True when this Activity was launched specifically to request MediaProjection. */
+    private var requestingProjection = false
+
+    private val projectionLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK && result.data != null) {
+            // Relay the permission token to the running overlay service.
+            val forward = Intent(this, FloatingOverlayService::class.java).apply {
+                action = FloatingOverlayService.ACTION_START_PROJECTION
+                putExtra(FloatingOverlayService.EXTRA_PROJECTION_RESULT_CODE, result.resultCode)
+                putExtra(FloatingOverlayService.EXTRA_PROJECTION_DATA, result.data)
+            }
+            startService(forward)
+        }
+        // Either way, this activity's job is done.
+        finish()
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
@@ -40,10 +62,19 @@ class MainActivity : AppCompatActivity() {
         findViewById<TextView>(R.id.privacy).setOnClickListener {
             runCatching { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(getString(R.string.privacy_policy_url)))) }
         }
+        // If we were started to request screen capture, skip the overlay-permission flow.
+        if (intent?.action == ACTION_REQUEST_PROJECTION) {
+            requestingProjection = true
+        }
     }
 
     override fun onResume() {
         super.onResume()
+        if (requestingProjection) {
+            requestingProjection = false
+            showProjectionDisclosure()
+            return
+        }
         proceed()
     }
 
@@ -102,5 +133,31 @@ class MainActivity : AppCompatActivity() {
         } catch (_: ActivityNotFoundException) {
             startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION))
         }
+    }
+
+    // ------------------------------------------------------------------ screen capture
+
+    /**
+     * Show a "prominent disclosure" before requesting the MediaProjection permission,
+     * as required by Google Play policy.
+     */
+    private fun showProjectionDisclosure() {
+        AlertDialog.Builder(this)
+            .setTitle(R.string.detect_disclosure_title)
+            .setMessage(R.string.detect_disclosure_body)
+            .setPositiveButton(R.string.detect_allow) { _, _ -> launchProjectionChooser() }
+            .setNegativeButton(R.string.detect_cancel) { _, _ -> finish() }
+            .setOnCancelListener { finish() }
+            .show()
+    }
+
+    private fun launchProjectionChooser() {
+        val mpm = getSystemService(MediaProjectionManager::class.java)
+        projectionLauncher.launch(mpm.createScreenCaptureIntent())
+    }
+
+    companion object {
+        /** Sent by FloatingOverlayService when the user taps the Detect button. */
+        const val ACTION_REQUEST_PROJECTION = "com.mlbb.counteroverlay.REQUEST_PROJECTION"
     }
 }

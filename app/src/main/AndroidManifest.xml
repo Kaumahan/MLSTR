@@ -5,6 +5,7 @@
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
@@ -31,10 +32,10 @@
         <service
             android:name=".overlay.FloatingOverlayService"
             android:exported="false"
-            android:foregroundServiceType="specialUse">
+            android:foregroundServiceType="specialUse|mediaProjection">
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-                android:value="Floating overlay bubble that shows hero counter tips on top of other apps while the user plays. The user opens and closes it themselves." />
+                android:value="Floating overlay bubble that shows hero counter tips on top of other apps while the user plays. The user opens and closes it themselves. When the user explicitly taps Detect, one screen frame is captured to auto-detect enemy hero picks during the draft phase." />
         </service>
     </application>
 </manifest>

@@ -24,4 +24,16 @@
     <string name="notif_text">Tap the bubble for counters. Drag it to the X to close.</string>
     <string name="notif_stop">Close bubble</string>
     <string name="privacy_policy_url">https://YOUR_GITHUB_USER.github.io/YOUR_REPO/privacy-policy.html</string>
+
+    <!-- Auto-detect heroes from screen -->
+    <string name="detect_heroes">Detect heroes</string>
+    <string name="detect_desc">Auto-detect enemy heroes from the screen</string>
+    <string name="detect_scanning">Scanning screen…</string>
+    <string name="detect_found">Found %d hero(s)</string>
+    <string name="detect_none">No heroes detected — tap picks manually</string>
+    <string name="detect_no_permission">Screen capture permission needed. Tap to grant.</string>
+    <string name="detect_disclosure_title">Read screen to detect heroes?</string>
+    <string name="detect_disclosure_body">To auto-detect enemy hero picks from your screen during the draft phase, this app needs the \"Screen Capture\" permission.\n\nA single frame is captured when you tap Detect. No data leaves your device. Tap Allow, then start a draft and tap Detect when the enemy picks are shown.</string>
+    <string name="detect_allow">Allow</string>
+    <string name="detect_cancel">Not now</string>
 </resources>

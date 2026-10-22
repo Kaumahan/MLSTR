@@ -64,6 +64,13 @@
             android:textSize="11.5sp" />
 
         <ImageButton
+            android:id="@+id/btnDetect"
+            android:layout_width="36dp" android:layout_height="36dp"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:contentDescription="@string/detect_desc"
+            android:src="@drawable/ic_detect" />
+
+        <ImageButton
             android:id="@+id/btnRefresh"
             android:layout_width="36dp" android:layout_height="36dp"
             android:background="?attr/selectableItemBackgroundBorderless"

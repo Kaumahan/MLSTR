@@ -50,6 +50,10 @@ import com.mlbb.counteroverlay.data.model.Loadable
 import com.mlbb.counteroverlay.data.model.Rank
 import com.mlbb.counteroverlay.data.model.RateUi
 import com.mlbb.counteroverlay.data.model.Roster
+import android.media.projection.MediaProjection
+import android.media.projection.MediaProjectionManager
+import com.mlbb.counteroverlay.detection.DraftScreenDetector
+import com.mlbb.counteroverlay.detection.HeroIconMatcher
 import com.mlbb.counteroverlay.ui.MainActivity
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
@@ -117,6 +121,12 @@ class FloatingOverlayService : LifecycleService() {
     private var matchupJob: Job? = null
     private var buildJob: Job? = null
 
+    // ── Screen detection ──────────────────────────────────────────────────────
+    private val detector by lazy { ServiceLocator.draftScreenDetector(this) }
+    private val captureManager by lazy { ServiceLocator.screenCaptureManager(this) }
+    private var detectJob: Job? = null
+    private var isDetecting = false
+
     private val gridAdapter = HeroGridAdapter(
         isSelected = { it in team },
         onTap = { toggleEnemy(it) },
@@ -146,6 +156,25 @@ class FloatingOverlayService : LifecycleService() {
         // we're already running (e.g. the app icon was tapped again). Cheap and idempotent.
         if (!startAsForeground()) { stopSelf(); return START_NOT_STICKY }
         if (intent?.action == ACTION_STOP) stopSelf()
+        if (intent?.action == ACTION_START_PROJECTION) {
+            val resultCode = intent.getIntExtra(EXTRA_PROJECTION_RESULT_CODE, android.app.Activity.RESULT_CANCELED)
+            @Suppress("DEPRECATION")
+            val data = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU)
+                intent.getParcelableExtra(EXTRA_PROJECTION_DATA, Intent::class.java)
+            else intent.getParcelableExtra(EXTRA_PROJECTION_DATA)
+            if (resultCode == android.app.Activity.RESULT_OK && data != null) {
+                val mpm = getSystemService(MediaProjectionManager::class.java)
+                val mp = mpm.getMediaProjection(resultCode, data)
+                captureManager.start(mp)
+                // Pre-warm icon matcher after the roster is ready
+                lifecycleScope.launch(safe) {
+                    val heroList = roster.value?.heroes
+                    if (!heroList.isNullOrEmpty()) {
+                        ServiceLocator.heroIconMatcher(this@FloatingOverlayService).preload(heroList)
+                    }
+                }
+            }
+        }
         // NOT sticky: if Android kills us during a heavy match, don't auto-restart in the
         // background (that restart is what Android 12+ blocks with a crash). Tap the app to reopen.
         return START_NOT_STICKY
@@ -156,6 +185,8 @@ class FloatingOverlayService : LifecycleService() {
         panel?.findViewById<RecyclerView>(R.id.heroList)?.adapter = null
         listOf(panel, bubble, closeTarget).forEach { v -> v?.let { runCatching { wm.removeView(it) } } }
         panel = null; bubble = null; closeTarget = null
+        detectJob?.cancel()
+        if (captureManager.isRunning()) captureManager.stop()
         isRunning = false
         super.onDestroy()
     }
@@ -697,7 +728,75 @@ class FloatingOverlayService : LifecycleService() {
         render()
     }
 
-    // ================================================================ bubble
+    // ================================================================ screen detection
+
+    /**
+     * Called when the user taps the "Detect" button in the panel.
+     *
+     * Flow:
+     *   1. If MediaProjection is not running → send user to MainActivity to grant the
+     *      screen capture permission.  MainActivity will call
+     *      [ACTION_START_PROJECTION] back to this service once granted.
+     *   2. If projection is ready → run the detection pipeline, then auto-populate
+     *      the enemy team with whatever heroes were found.
+     */
+    private fun onDetectTapped() {
+        if (!captureManager.isRunning()) {
+            // Ask the user for MediaProjection permission via MainActivity.
+            val intent = Intent(this, MainActivity::class.java).apply {
+                action = MainActivity.ACTION_REQUEST_PROJECTION
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
+            }
+            startActivity(intent)
+            // Show a brief status message in the overlay.
+            panel?.findViewById<TextView>(R.id.status)?.text =
+                getString(R.string.detect_no_permission)
+            return
+        }
+        if (isDetecting) return   // already scanning
+        runDetection()
+    }
+
+    private fun runDetection() {
+        val heroList = roster.value?.heroes
+        if (heroList.isNullOrEmpty()) return
+
+        detectJob?.cancel()
+        isDetecting = true
+        panel?.findViewById<ImageButton>(R.id.btnDetect)?.alpha = 0.4f
+        panel?.findViewById<TextView>(R.id.status)?.text = getString(R.string.detect_scanning)
+
+        detectJob = lifecycleScope.launch(safe) {
+            try {
+                // Pre-warm icon histograms lazily (no-op if already warmed).
+                ServiceLocator.heroIconMatcher(this@FloatingOverlayService).preload(heroList)
+
+                val result = detector.detect(heroList)
+                val detected = result.detected
+                result.screenshot.recycle()
+
+                if (detected.isEmpty()) {
+                    panel?.findViewById<TextView>(R.id.status)?.text =
+                        getString(R.string.detect_none)
+                } else {
+                    // Replace the current enemy team with detected heroes.
+                    clearTeam()
+                    val rosterMap = roster.value?.byId.orEmpty()
+                    detected.forEach { id ->
+                        rosterMap[id]?.let { addToTeam(it) }
+                    }
+                    panel?.findViewById<TextView>(R.id.status)?.text =
+                        getString(R.string.detect_found, detected.size)
+                    render()
+                }
+            } finally {
+                isDetecting = false
+                panel?.findViewById<ImageButton>(R.id.btnDetect)?.alpha = 1f
+            }
+        }
+    }
+
+// ================================================================ bubble
 
     @SuppressLint("InflateParams")
     private fun addBubble() {
@@ -845,6 +944,9 @@ class FloatingOverlayService : LifecycleService() {
         }
         view.findViewById<ImageButton>(R.id.btnClose).setOnClickListener { closePanel() }
         view.findViewById<ImageButton>(R.id.btnBack).setOnClickListener { goBack() }
+        view.findViewById<ImageButton>(R.id.btnDetect).setOnClickListener {
+            onDetectTapped()
+        }
         view.findViewById<ImageButton>(R.id.btnRefresh).setOnClickListener {
             loadRoster(force = true)
             stack.lastOrNull()?.let { loadHeroData(it, force = true) }
@@ -979,7 +1081,9 @@ class FloatingOverlayService : LifecycleService() {
             .build()
 
         val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
-            ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE else 0
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE or
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+        else 0
         ServiceCompat.startForeground(this, NOTIF_ID, notification, type)
         isRunning = true
     }
@@ -1005,6 +1109,10 @@ class FloatingOverlayService : LifecycleService() {
         private const val SEC_TEAM_ANY = "team_any"
         private const val SEC_TEAM_AVOID = "team_avoid"
         const val ACTION_STOP = "com.mlbb.counteroverlay.STOP"
+        /** Sent by MainActivity after the user grants MediaProjection permission. */
+        const val ACTION_START_PROJECTION = "com.mlbb.counteroverlay.START_PROJECTION"
+        const val EXTRA_PROJECTION_RESULT_CODE = "projection_result_code"
+        const val EXTRA_PROJECTION_DATA = "projection_data"
 
         @Volatile var isRunning = false
             private set
