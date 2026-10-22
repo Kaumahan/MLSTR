@@ -32,10 +32,17 @@ then run `gradle bundleRelease` → `app/build/outputs/bundle/release/app-releas
 **To build on GitHub** (`.github/workflows/android-release.yml` ✅), add 4 repo secrets (Settings → Secrets and variables → Actions):
 | Secret | Value |
 |---|---|
-| `RELEASE_KEYSTORE_BASE64` | output of `base64 -w0 upload-keystore.jks` (macOS: `base64 -i upload-keystore.jks`) |
+| `RELEASE_KEYSTORE_BASE64` | the text in `keystore-base64.txt` made by the command below (copy ALL of it) |
 | `RELEASE_STORE_PASSWORD` | keystore password |
 | `RELEASE_KEY_ALIAS` | `upload` |
 | `RELEASE_KEY_PASSWORD` | key password |
+
+Make `keystore-base64.txt` in the folder that holds `upload-keystore.jks`:
+- **Windows (PowerShell):** `[Convert]::ToBase64String([IO.File]::ReadAllBytes("$PWD\upload-keystore.jks")) | Set-Content keystore-base64.txt`
+  (the `$PWD\` part matters: without it PowerShell may read the file from a different folder)
+- **Mac / Linux:** `base64 -i upload-keystore.jks | tr -d '\n' > keystore-base64.txt`
+
+Open the .txt in Notepad, Ctrl+A, Ctrl+C, paste into the secret. **Delete the .txt afterwards.**
 
 Then push a tag: `git tag v1.2.0 && git push origin v1.2.0`. Download **app-release-aab** from the Actions run. The version code goes up automatically on each run.
 
