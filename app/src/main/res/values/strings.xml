@@ -1,0 +1,31 @@
+<resources>
+    <string name="app_name">Ace Counter Pick</string>
+    <string name="panel_title">Counter Pick</string>
+    <string name="tab_counter">Counter</string>
+    <string name="tab_first_pick">First Pick</string>
+    <string name="tab_team">Team</string>
+    <string name="add_team">+ Team</string>
+    <string name="in_team">✓ Team</string>
+    <string name="team_pick_hint">Tap enemy heroes to add them to the team (up to 5).</string>
+    <string name="search_hint">Type enemy hero, e.g. Lukas</string>
+    <string name="back">Back</string>
+    <string name="refresh">Refresh data</string>
+    <string name="minimize">Minimize</string>
+    <string name="close_bubble">Drop here to close the bubble</string>
+    <string name="bubble_desc">Open counter picks</string>
+    <string name="data_credit">Data: Moonton via Rone Arena (arena.rone.dev). Unofficial.</string>
+
+    <string name="disclosure_title">Show the counter bubble over your game?</string>
+    <string name="disclosure_body">To float the counter bubble over Mobile Legends, this app needs the \"Display over other apps\" permission.\n\nOn the next screen, find <b>Ace Counter Pick</b> near the top of the list, tap it and turn the switch on. Then press Back and the bubble will appear.\n\nThe app does not read your screen or game. It only shows hero tips you tap on.</string>
+    <string name="disclosure_allow">Allow</string>
+    <string name="disclosure_cancel">Not now</string>
+    <string name="main_needs_permission">Ace Counter Pick needs the \"Display over other apps\" permission to float over your game.</string>
+    <string name="main_open_settings">Allow display over other apps</string>
+    <string name="main_privacy">Privacy policy</string>
+    <string name="main_disclaimer">Unofficial fan tool. Not affiliated with or endorsed by Moonton. Hero data © Moonton, provided by Rone Arena (arena.rone.dev).</string>
+    <string name="notif_channel">Counter bubble</string>
+    <string name="notif_title">Counter bubble is on</string>
+    <string name="notif_text">Tap the bubble for counters. Drag it to the X to close.</string>
+    <string name="notif_stop">Close bubble</string>
+    <string name="privacy_policy_url">https://YOUR_GITHUB_USER.github.io/YOUR_REPO/privacy-policy.html</string>
+</resources>

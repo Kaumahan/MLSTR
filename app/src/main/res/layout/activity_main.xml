@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#FF121621"
+    android:padding="24dp">
+
+    <LinearLayout
+        android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:gravity="center_horizontal"
+        android:orientation="vertical">
+
+        <ImageView
+            android:layout_width="96dp" android:layout_height="96dp"
+            android:layout_marginTop="32dp"
+            android:importantForAccessibility="no"
+            android:src="@drawable/ic_bubble" />
+
+        <TextView
+            android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="@string/app_name"
+            android:textColor="@color/text_primary"
+            android:textSize="22sp" android:textStyle="bold" />
+
+        <TextView
+            android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:layout_marginVertical="20dp"
+            android:gravity="center"
+            android:text="@string/main_needs_permission"
+            android:textColor="@color/text_secondary"
+            android:textSize="16sp" />
+
+        <Button android:id="@+id/btnPermission"
+            android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:text="@string/main_open_settings" />
+
+        <TextView android:id="@+id/privacy"
+            android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:layout_marginTop="24dp"
+            android:padding="8dp"
+            android:text="@string/main_privacy"
+            android:textColor="@color/accent" android:textSize="14sp" />
+
+        <TextView
+            android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:gravity="center"
+            android:text="@string/main_disclaimer"
+            android:textColor="#99C5CBD8" android:textSize="12sp" />
+    </LinearLayout>
+</ScrollView>

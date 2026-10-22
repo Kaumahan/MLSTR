@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Only cached public game data is stored; nothing personal. Exclude the cache from backups. -->
+<data-extraction-rules>
+    <cloud-backup><exclude domain="file" path="api_cache/" /></cloud-backup>
+    <device-transfer><exclude domain="file" path="api_cache/" /></device-transfer>
+</data-extraction-rules>

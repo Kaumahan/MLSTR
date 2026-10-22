@@ -1,0 +1,19 @@
+<resources>
+    <style name="Theme.App" parent="Theme.AppCompat.DayNight.NoActionBar">
+        <item name="colorAccent">@color/accent</item>
+    </style>
+    <!-- Used to inflate overlay views from the Service -->
+    <style name="Theme.Overlay" parent="Theme.AppCompat.NoActionBar">
+        <item name="colorAccent">@color/accent</item>
+    </style>
+
+    <color name="panel_bg">#F2121621</color>
+    <color name="header_bg">#FF1E2433</color>
+    <color name="card_bg">#FF1A2030</color>
+    <color name="accent">#FFF5B642</color>
+    <color name="text_primary">#FFFFFFFF</color>
+    <color name="text_secondary">#FFC5CBD8</color>
+    <color name="good">#FF4ADE80</color>
+    <color name="bad">#FFF87171</color>
+    <color name="close_bg">#CC2A1218</color>
+</resources>
