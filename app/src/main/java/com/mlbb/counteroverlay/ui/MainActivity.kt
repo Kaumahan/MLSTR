@@ -11,6 +11,7 @@ import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
+import com.mlbb.counteroverlay.CrashReporter
 import com.mlbb.counteroverlay.R
 import com.mlbb.counteroverlay.overlay.FloatingOverlayService
 
@@ -24,6 +25,7 @@ class MainActivity : AppCompatActivity() {
 
     private var dialog: AlertDialog? = null
     private var askedThisSession = false
+    private var crashDialogOpen = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -42,6 +44,13 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        proceed()
+    }
+
+    private fun proceed() {
+        if (isFinishing || crashDialogOpen) return
+        // After a crash or error: offer to share the saved report before anything else.
+        CrashReporter.read(this)?.let { showCrashReport(it); return }
         if (Settings.canDrawOverlays(this)) {
             dialog?.dismiss()
             FloatingOverlayService.start(this)
@@ -50,6 +59,31 @@ class MainActivity : AppCompatActivity() {
             askedThisSession = true
             showDisclosure()
         }
+    }
+
+    private fun showCrashReport(report: String) {
+        crashDialogOpen = true
+        AlertDialog.Builder(this)
+            .setTitle("Something went wrong last time")
+            .setMessage("A crash report was saved on your phone. Please share it with the developer so it can be fixed. It contains only technical details (phone model, Android version, error), nothing personal.")
+            .setPositiveButton("Share report") { _, _ ->
+                runCatching {
+                    startActivity(Intent.createChooser(
+                        Intent(Intent.ACTION_SEND).setType("text/plain")
+                            .putExtra(Intent.EXTRA_SUBJECT, "Ace Counter Pick crash report")
+                            .putExtra(Intent.EXTRA_TEXT, report),
+                        "Share crash report"))
+                }
+                CrashReporter.clear(this)
+            }
+            .setNeutralButton("Copy") { _, _ ->
+                getSystemService(android.content.ClipboardManager::class.java)
+                    ?.setPrimaryClip(android.content.ClipData.newPlainText("crash report", report))
+                CrashReporter.clear(this)
+            }
+            .setNegativeButton("Dismiss") { _, _ -> CrashReporter.clear(this) }
+            .setOnDismissListener { crashDialogOpen = false; proceed() }
+            .show()
     }
 
     private fun showDisclosure() {

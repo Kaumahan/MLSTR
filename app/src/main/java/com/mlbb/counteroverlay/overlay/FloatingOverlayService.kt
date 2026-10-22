@@ -36,6 +36,7 @@ import androidx.lifecycle.LifecycleService
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.RecyclerView
+import com.mlbb.counteroverlay.CrashReporter
 import com.mlbb.counteroverlay.R
 import com.mlbb.counteroverlay.data.DraftAdvisor
 import com.mlbb.counteroverlay.data.HeroSearch
@@ -127,21 +128,32 @@ class FloatingOverlayService : LifecycleService() {
     override fun onCreate() {
         super.onCreate()
         wm = getSystemService()!!
-        startAsForeground()
-        if (!Settings.canDrawOverlays(this)) { stopSelf(); return }
-        rank = Rank.from(prefs.getString("rank", null))
-        loadUiPrefs()
-        addBubble()
+        // Show the bubble FIRST: an app with a visible overlay window is allowed to run a
+        // foreground service; without it Android 12+ can refuse and crash the app.
+        val canDraw = Settings.canDrawOverlays(this)
+        if (canDraw) {
+            rank = Rank.from(prefs.getString("rank", null))
+            loadUiPrefs()
+            addBubble()
+        }
+        if (!startAsForeground() || !canDraw || bubble == null) { stopSelf(); return }
         loadRoster(force = false) // warm caches so the first tap is instant
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         super.onStartCommand(intent, flags, startId)
+        // Every startForegroundService() must be answered with startForeground(), even when
+        // we're already running (e.g. the app icon was tapped again). Cheap and idempotent.
+        if (!startAsForeground()) { stopSelf(); return START_NOT_STICKY }
         if (intent?.action == ACTION_STOP) stopSelf()
-        return START_STICKY
+        // NOT sticky: if Android kills us during a heavy match, don't auto-restart in the
+        // background (that restart is what Android 12+ blocks with a crash). Tap the app to reopen.
+        return START_NOT_STICKY
     }
 
     override fun onDestroy() {
+        mainHandler.removeCallbacksAndMessages(null)
+        panel?.findViewById<RecyclerView>(R.id.heroList)?.adapter = null
         listOf(panel, bubble, closeTarget).forEach { v -> v?.let { runCatching { wm.removeView(it) } } }
         panel = null; bubble = null; closeTarget = null
         isRunning = false
@@ -150,9 +162,12 @@ class FloatingOverlayService : LifecycleService() {
 
     // ================================================================ data
 
+    /** Any unexpected error in background work is recorded instead of crashing the overlay. */
+    private val safe = kotlinx.coroutines.CoroutineExceptionHandler { _, e -> CrashReporter.record(this, e) }
+
     private fun loadRoster(force: Boolean) {
         rosterJob?.cancel()
-        rosterJob = lifecycleScope.launch {
+        rosterJob = lifecycleScope.launch(safe) {
             repository.roster(force).collect { roster = it; render() }
         }
     }
@@ -160,18 +175,18 @@ class FloatingOverlayService : LifecycleService() {
     private fun loadHeroData(hero: HeroUi, force: Boolean) {
         matchupJob?.cancel(); buildJob?.cancel()
         matchups = Loadable(isLoading = true)
-        matchupJob = lifecycleScope.launch {
+        matchupJob = lifecycleScope.launch(safe) {
             repository.matchups(hero.id, rank, force).collect { matchups = it; render() }
         }
         if (hero.traits.isEmpty() && hero.id !in fetchedTraits) {
-            lifecycleScope.launch {
+            lifecycleScope.launch(safe) {
                 repository.traits(hero.id).collect { l -> l.value?.let { fetchedTraits[hero.id] = it; render() } }
             }
         }
         val lane = buildLane ?: hero.laneEnums.firstOrNull() ?: Lane.EXP
         buildLane = lane
         builds = Loadable(isLoading = true)
-        buildJob = lifecycleScope.launch {
+        buildJob = lifecycleScope.launch(safe) {
             repository.builds(hero.id, lane, rank, force).collect { builds = it; render() }
         }
     }
@@ -483,7 +498,7 @@ class FloatingOverlayService : LifecycleService() {
                 buildLane = lanes[i]
                 buildJob?.cancel()
                 builds = Loadable(isLoading = true)
-                buildJob = lifecycleScope.launch {
+                buildJob = lifecycleScope.launch(safe) {
                     repository.builds(h.id, lanes[i], rank).collect { builds = it; render() }
                 }
                 render()
@@ -530,7 +545,7 @@ class FloatingOverlayService : LifecycleService() {
         ratesJob?.cancel()
         if (rank == Rank.ALL) { rates = Loadable(); return }
         rates = Loadable(isLoading = true)
-        ratesJob = lifecycleScope.launch { repository.rates(rank, force).collect { rates = it; render() } }
+        ratesJob = lifecycleScope.launch(safe) { repository.rates(rank, force).collect { rates = it; render() } }
     }
 
     // ================================================================ team
@@ -616,7 +631,7 @@ class FloatingOverlayService : LifecycleService() {
     private fun loadTeamMatchup(id: Int, force: Boolean) {
         teamJobs[id]?.cancel()
         teamMatchups[id] = Loadable(isLoading = true)
-        teamJobs[id] = lifecycleScope.launch {
+        teamJobs[id] = lifecycleScope.launch(safe) {
             repository.matchups(id, rank, force).collect { teamMatchups[id] = it; render() }
         }
     }
@@ -691,8 +706,12 @@ class FloatingOverlayService : LifecycleService() {
             WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.WRAP_CONTENT, focusable = false,
         ).apply { x = 0; y = ui.dp(180) }
         view.setOnTouchListener(BubbleTouchListener(view))
-        wm.addView(view, bubbleParams)
-        bubble = view
+        try {
+            wm.addView(view, bubbleParams)
+            bubble = view
+        } catch (e: RuntimeException) {   // permission revoked / window rejected
+            CrashReporter.record(this, e)
+        }
     }
 
     private fun snapBubbleToEdge() {
@@ -714,7 +733,7 @@ class FloatingOverlayService : LifecycleService() {
             flags = flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
         }
         v.alpha = 0f
-        wm.addView(v, params)
+        try { wm.addView(v, params) } catch (e: RuntimeException) { return }
         v.animate().alpha(1f).setDuration(150).start()
         closeTarget = v
     }
@@ -769,7 +788,7 @@ class FloatingOverlayService : LifecycleService() {
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                     hideCloseTarget()
                     when {
-                        dragging && overTarget -> stopSelf()          // dropped on the X: close
+                        dragging && overTarget -> mainHandler.post { stopSelf() }   // dropped on the X: close after the touch finishes
                         dragging -> snapBubbleToEdge()
                         e.actionMasked == MotionEvent.ACTION_UP -> togglePanel()
                     }
@@ -836,7 +855,13 @@ class FloatingOverlayService : LifecycleService() {
         view.findViewById<View>(R.id.tabFirstPick).setOnClickListener { selectTab(Tab.FIRST_PICK) }
         view.findViewById<View>(R.id.header).setOnTouchListener(PanelDragListener(view))
 
-        wm.addView(view, panelParams)
+        try {
+            wm.addView(view, panelParams)
+        } catch (e: RuntimeException) {
+            CrashReporter.record(this, e)
+            view.findViewById<RecyclerView>(R.id.heroList).adapter = null
+            return
+        }
         panel = view
         searchVisible = false
         doRender()
@@ -845,7 +870,11 @@ class FloatingOverlayService : LifecycleService() {
     private fun closePanel() {
         hideKeyboard()
         searchVisible = false; query = ""
-        panel?.let { runCatching { wm.removeView(it) } }
+        panel?.let {
+            // Detach the shared grid adapter so old, closed panels never receive updates.
+            it.findViewById<RecyclerView>(R.id.heroList)?.adapter = null
+            runCatching { wm.removeView(it) }
+        }
         panel = null
     }
 
@@ -902,6 +931,7 @@ class FloatingOverlayService : LifecycleService() {
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
         if (panel != null) { closePanel(); openPanel() }
+        if (bubble == null) return
         bubble?.let { b ->
             bubbleParams.y = bubbleParams.y.coerceIn(0, (resources.displayMetrics.heightPixels - b.height).coerceAtLeast(0))
             snapBubbleToEdge()
@@ -920,7 +950,14 @@ class FloatingOverlayService : LifecycleService() {
         PixelFormat.TRANSLUCENT,
     ).apply { gravity = Gravity.TOP or Gravity.START }
 
-    private fun startAsForeground() {
+    /** Returns false if Android refused (e.g. started from the background); never throws. */
+    private fun startAsForeground(): Boolean = try {
+        startAsForegroundUnsafe(); true
+    } catch (e: RuntimeException) {
+        CrashReporter.record(this, e); false
+    }
+
+    private fun startAsForegroundUnsafe() {
         val nm = getSystemService<NotificationManager>()!!
         nm.createNotificationChannel(
             NotificationChannel(CHANNEL_ID, getString(R.string.notif_channel), NotificationManager.IMPORTANCE_LOW)
