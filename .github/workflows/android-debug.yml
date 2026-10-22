@@ -9,7 +9,7 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04   # pinned: ubuntu-latest moved to Ubuntu 26 in Oct 2026
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
@@ -19,7 +19,30 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - uses: android-actions/setup-android@v3
+      # Replaces android-actions/setup-android, which broke on GitHub's new runners in Oct 2026
+      # ("Failed to find package 'tools'"). Installs only what this project needs.
+      - name: Set up Android SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
+          SDKMANAGER=""
+          if [ -n "$SDK" ] && [ -x "$SDK/cmdline-tools/latest/bin/sdkmanager" ]; then
+            SDKMANAGER="$SDK/cmdline-tools/latest/bin/sdkmanager"
+          else
+            echo "No usable preinstalled Android SDK, installing command-line tools"
+            SDK="$HOME/android-sdk"; mkdir -p "$SDK/cmdline-tools"
+            curl -fsSL -o /tmp/clt.zip https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
+            unzip -q -o /tmp/clt.zip -d "$SDK/cmdline-tools"
+            rm -rf "$SDK/cmdline-tools/latest"; mv "$SDK/cmdline-tools/cmdline-tools" "$SDK/cmdline-tools/latest"
+            SDKMANAGER="$SDK/cmdline-tools/latest/bin/sdkmanager"
+          fi
+          echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
+          yes | "$SDKMANAGER" --sdk_root="$SDK" --licenses > /dev/null || true
+          "$SDKMANAGER" --sdk_root="$SDK" "platforms;android-36" "build-tools;36.0.0" "build-tools;35.0.0" "platform-tools" > /tmp/sdk.log 2>&1 \
+            || { tail -30 /tmp/sdk.log; echo "::error::Android SDK install failed"; exit 1; }
+          echo "Android SDK ready at $SDK"
 
       # Installs Gradle and caches dependencies; no wrapper jar needs to be committed.
       - uses: gradle/actions/setup-gradle@v4

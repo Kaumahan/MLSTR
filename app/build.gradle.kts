@@ -86,17 +86,24 @@ dependencies {
 }
 
 // Robolectric's Android runtime, resolved through Gradle (works behind proxies / offline CI).
+// Only needed for the optional panel screenshot test (gradle testDebugUnitTest -Pscreenshots).
+val wantScreenshots = project.hasProperty("screenshots")
 val robolectricRuntime: Configuration by configurations.creating
 dependencies {
-    robolectricRuntime("org.robolectric:android-all-instrumented:14-robolectric-10818077-i7")
     robolectricRuntime("org.robolectric:android-all-instrumented:15-robolectric-12650502-i7")
 }
 val robolectricDir = layout.buildDirectory.dir("robolectric-jars")
 val copyRobolectricRuntime by tasks.registering(Copy::class) {
     from(robolectricRuntime); into(robolectricDir)
+    mustRunAfter("clean")
 }
 tasks.withType<Test>().configureEach {
-    dependsOn(copyRobolectricRuntime)
-    systemProperty("robolectric.offline", "true")
-    systemProperty("robolectric.dependency.dir", robolectricDir.get().asFile.absolutePath)
+    if (wantScreenshots) {
+        dependsOn(copyRobolectricRuntime)
+        systemProperty("robolectric.offline", "true")
+        systemProperty("robolectric.dependency.dir", robolectricDir.get().asFile.absolutePath)
+    } else {
+        // Normal and CI builds: fast logic tests only, no 200 MB Android runtime download.
+        filter { excludeTestsMatching("*PanelScreenshotTest*") }
+    }
 }

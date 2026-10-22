@@ -27,7 +27,7 @@ import java.io.File
  */
 @RunWith(RobolectricTestRunner::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
-@Config(sdk = [34], qualifiers = "w411dp-h891dp-xxhdpi")
+@Config(sdk = [35], qualifiers = "w411dp-h891dp-xxhdpi")
 class PanelScreenshotTest {
 
     private val ctx = ApplicationProvider.getApplicationContext<android.app.Application>()
