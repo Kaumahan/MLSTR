@@ -163,7 +163,7 @@ class OverlayViews(private val ctx: Context) {
             orientation = LinearLayout.VERTICAL
             setPadding(0, dp(2), 0, dp(2))
             addView(text(
-                if (selected == null) "Detected · tap = correct it, hold = no hero here. \"Name?\" = unsure guess" else "Now tap the correct hero in the grid",
+                if (selected == null) "Detected · tap = correct it, hold = no hero here. \"Name?\" = unsure guess" else "Tap the right hero below (or in the grid)",
                 10.5f, if (selected == null) R.color.text_secondary else R.color.accent, bold = selected != null))
             addView(LinearLayout(ctx).apply {
                 orientation = LinearLayout.HORIZONTAL
@@ -185,6 +185,29 @@ class OverlayViews(private val ctx: Context) {
                     }, LinearLayout.LayoutParams(dp(40), WRAP_CONTENT).apply { marginEnd = dp(3) })
                 }
             })
+        }
+
+    /** The top guesses for one slot as tappable chips: icon + name. */
+    fun candidateRow(items: List<Pair<String, String?>>, onTap: (Int) -> Unit): View =
+        LinearLayout(ctx).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(0, dp(2), 0, dp(4))
+            items.forEachIndexed { i, (name, icon) ->
+                addView(LinearLayout(ctx).apply {
+                    orientation = LinearLayout.VERTICAL
+                    gravity = Gravity.CENTER_HORIZONTAL
+                    setBackgroundResource(R.drawable.card_bg)
+                    setPadding(dp(4), dp(3), dp(4), dp(3))
+                    setOnClickListener { onTap(i) }
+                    addView(ImageView(ctx).apply {
+                        scaleType = ImageView.ScaleType.CENTER_CROP
+                        loadHero(icon)
+                    }, LinearLayout.LayoutParams(dp(34), dp(34)))
+                    addView(text(name, 10f, R.color.text_primary, bold = true).apply {
+                        maxLines = 1; ellipsize = TextUtils.TruncateAt.END; gravity = Gravity.CENTER
+                    }, LinearLayout.LayoutParams(dp(52), WRAP_CONTENT))
+                }, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { marginEnd = dp(4) })
+            }
         }
 
     /** Up to 3 result cards side by side, plus a "More" button. */

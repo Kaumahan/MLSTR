@@ -59,6 +59,8 @@ class DraftScreenDetector(
         val thumbs: List<Bitmap?> = emptyList(),
         /** Best guess per slot even when it was too weak to accept (shown as "Name?"). */
         val guesses: List<Int?> = emptyList(),
+        /** The 3 best guesses per slot, best first, so the user can pick the right one with one tap. */
+        val candidates: List<List<Int>> = emptyList(),
     ) {
         val detected: List<Int> get() = slots.filterNotNull()
     }
@@ -109,7 +111,8 @@ class DraftScreenDetector(
             "  ->  " + results.joinToString { it?.toString() ?: "-" })
         val note = if (SAVE_DEBUG_IMAGES) saveDebugImages(screenshot, rects, ranked, results, heroes) else null
         DetectionResult(slots = results, screenshot = screenshot, scores = scores, debugNote = note, thumbs = thumbs,
-            guesses = ranked.map { it.firstOrNull()?.heroId })
+            guesses = ranked.map { it.firstOrNull()?.heroId },
+            candidates = ranked.map { top -> top.take(3).map { it.heroId } })
     }
 
     /**

@@ -130,6 +130,7 @@ class FloatingOverlayService : LifecycleService() {
     private var slotHeroes: MutableList<Int?> = mutableListOf()
     private var teachSlot: Int? = null
     private var lastGuesses: List<Int?> = emptyList()
+    private var lastCandidates: List<List<Int>> = emptyList()
     private var isDetecting = false
     @Volatile private var projectionActive = false   // true while a MediaProjection session is alive
     private var detectMessage: String? = null          // shown in the status line until it times out
@@ -312,9 +313,13 @@ class FloatingOverlayService : LifecycleService() {
             }, teachSlot,
                 onTap = { i ->
                     teachSlot = if (teachSlot == i) null else i
-                    setDetectMessage(if (teachSlot != null) "Slot ${i + 1}: tap the correct hero in the grid." else null, 30000)
+                    setDetectMessage(if (teachSlot != null) "Slot ${i + 1}: tap the right hero below, or find it in the grid." else null, 30000)
                 },
                 onHold = { i -> clearSlot(i) }))
+        }
+        teachSlot?.let { slot ->
+            val cands = lastCandidates.getOrNull(slot).orEmpty().mapNotNull { r?.byId?.get(it) }
+            if (cands.isNotEmpty()) top.addView(ui.candidateRow(cands.map { it.name to it.icon }) { k -> teachHero(cands[k]) })
         }
         top.laneSelector()
         when {
@@ -716,7 +721,7 @@ class FloatingOverlayService : LifecycleService() {
     }
 
     private fun clearTeam() {
-        lastThumbs = null; slotHeroes = mutableListOf(); teachSlot = null; lastGuesses = emptyList()
+        lastThumbs = null; slotHeroes = mutableListOf(); teachSlot = null; lastGuesses = emptyList(); lastCandidates = emptyList()
         team.toList().forEach { teamJobs.remove(it)?.cancel(); teamMatchups.remove(it) }
         team.clear()
         teamPage = false
@@ -888,6 +893,7 @@ class FloatingOverlayService : LifecycleService() {
                 // Keep the portraits so the user can correct a wrong slot (teach mode).
                 lastThumbs = result.thumbs
                 lastGuesses = result.guesses
+                lastCandidates = result.candidates
                 slotHeroes = result.slots.toMutableList()
                 teachSlot = null
                 render()
