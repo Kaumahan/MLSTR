@@ -1,7 +1,9 @@
 package com.mlbb.counteroverlay.overlay
 
 import android.content.Context
+import android.graphics.Bitmap
 import android.graphics.Typeface
+import android.text.TextUtils
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
@@ -151,6 +153,38 @@ class OverlayViews(private val ctx: Context) {
             setPadding(dp(4), dp(6), dp(2), dp(6)); setOnClickListener { onClear() }
         })
     }
+
+    /**
+     * The 5 portraits the last Detect looked at, each with the hero it decided on ("?" = none).
+     * Tapping one starts "teach" mode: the next hero tapped in the grid is the correct answer.
+     */
+    fun detectedRow(thumbs: List<Bitmap?>, names: List<String?>, selected: Int?, onTap: (Int) -> Unit): View =
+        LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, dp(2), 0, dp(2))
+            addView(text(
+                if (selected == null) "Detected · tap a portrait to correct it" else "Now tap the correct hero in the grid",
+                10.5f, if (selected == null) R.color.text_secondary else R.color.accent, bold = selected != null))
+            addView(LinearLayout(ctx).apply {
+                orientation = LinearLayout.HORIZONTAL
+                for (i in thumbs.indices) {
+                    addView(LinearLayout(ctx).apply {
+                        orientation = LinearLayout.VERTICAL
+                        gravity = Gravity.CENTER_HORIZONTAL
+                        setOnClickListener { onTap(i) }
+                        addView(ImageView(ctx).apply {
+                            scaleType = ImageView.ScaleType.CENTER_CROP
+                            setImageBitmap(thumbs[i])
+                            if (selected == i) setBackgroundResource(R.drawable.pick_ring)
+                            setPadding(dp(2), dp(2), dp(2), dp(2))
+                        }, LinearLayout.LayoutParams(dp(36), dp(36)))
+                        addView(text(names.getOrNull(i) ?: "?", 9f, R.color.text_secondary).apply {
+                            maxLines = 1; ellipsize = TextUtils.TruncateAt.END; gravity = Gravity.CENTER
+                        }, LinearLayout.LayoutParams(dp(40), WRAP_CONTENT))
+                    }, LinearLayout.LayoutParams(dp(40), WRAP_CONTENT).apply { marginEnd = dp(3) })
+                }
+            })
+        }
 
     /** Up to 3 result cards side by side, plus a "More" button. */
     fun pickCards(picks: List<Triple<String, String?, String>>, onClick: (Int) -> Unit, onMore: (() -> Unit)?): View =

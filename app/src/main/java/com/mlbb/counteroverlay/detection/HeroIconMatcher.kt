@@ -2,13 +2,16 @@ package com.mlbb.counteroverlay.detection
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.util.Log
 import coil.ImageLoader
 import coil.request.ImageRequest
 import coil.request.SuccessResult
 import com.mlbb.counteroverlay.data.model.HeroUi
+import java.io.File
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CopyOnWriteArrayList
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -62,6 +65,13 @@ class HeroIconMatcher(
 
     private val cache = ConcurrentHashMap<Int, Feature>()
 
+    /**
+     * Portraits the USER has confirmed ("this crop is Nolan"). They come from the real draft screen,
+     * so they look exactly like future crops and score far higher than the roster artwork does.
+     */
+    private val learned = ConcurrentHashMap<Int, CopyOnWriteArrayList<Feature>>()
+    @Volatile private var learnedLoaded = false
+
     /** Minimum blended score of the best hero for a slot to count as a match (0-1). */
     val matchThreshold: Float get() = THRESHOLD
 
@@ -79,7 +89,38 @@ class HeroIconMatcher(
                 }
             }
         }.awaitAll()
-        Log.d(TAG, "Preloaded ${cache.size}/${heroes.size} hero icons")
+        loadLearned()
+        Log.d(TAG, "Preloaded ${cache.size}/${heroes.size} hero icons, ${learned.values.sumOf { it.size }} learned portraits")
+    }
+
+    /** Remembers [crop] as a true picture of [heroId]. Saved on the phone, so it survives restarts. */
+    suspend fun learn(heroId: Int, crop: Bitmap) = withContext(Dispatchers.IO) {
+        loadLearned()
+        val list = learned.getOrPut(heroId) { CopyOnWriteArrayList() }
+        while (list.size >= MAX_LEARNED) list.removeAt(0)       // forget the oldest
+        list.add(featureOf(crop))
+        runCatching {
+            val dir = File(context.filesDir, LEARN_DIR).apply { mkdirs() }
+            File(dir, "${heroId}_${System.currentTimeMillis()}.png").outputStream().use {
+                crop.compress(Bitmap.CompressFormat.PNG, 100, it)
+            }
+            dir.listFiles { f -> f.name.startsWith("${heroId}_") }
+                ?.sortedBy { it.lastModified() }?.dropLast(MAX_LEARNED)?.forEach { it.delete() }
+        }.onFailure { Log.w(TAG, "Could not save learned portrait: ${it.message}") }
+        Unit
+    }
+
+    private fun loadLearned() {
+        if (learnedLoaded) return
+        learnedLoaded = true
+        runCatching {
+            File(context.filesDir, LEARN_DIR).listFiles()?.sortedBy { it.lastModified() }?.forEach { f ->
+                val id = f.name.substringBefore('_').toIntOrNull() ?: return@forEach
+                val bmp = BitmapFactory.decodeFile(f.path) ?: return@forEach
+                learned.getOrPut(id) { CopyOnWriteArrayList() }.add(featureOf(bmp))
+                bmp.recycle()
+            }
+        }.onFailure { Log.w(TAG, "Could not read learned portraits: ${it.message}") }
     }
 
     /**
@@ -91,14 +132,18 @@ class HeroIconMatcher(
      */
     suspend fun rank(crops: List<Bitmap>, heroes: List<HeroUi>, topK: Int = 8): List<Candidate> =
         withContext(Dispatchers.Default) {
+            loadLearned()
             val queries = crops.map { featureOf(it) }
             val out = ArrayList<Candidate>(heroes.size)
             for (hero in heroes) {
-                val ref = cache[hero.id]
+                val icon = cache[hero.id]
                     ?: (if (hero.icon != null) loadFeature(hero)?.also { cache[hero.id] = it } else null)
-                    ?: continue
+                val refs = ArrayList<Feature>(2)
+                icon?.let { refs.add(it) }
+                learned[hero.id]?.let { refs.addAll(it) }
+                if (refs.isEmpty()) continue
                 var best: Candidate? = null
-                for (q in queries) {
+                for (q in queries) for (ref in refs) {
                     val c = compare(hero.id, q, ref)
                     if (best == null || c.score > best.score) best = c
                 }
@@ -285,6 +330,8 @@ class HeroIconMatcher(
 
     companion object {
         const val NO_MATCH = -1
+        private const val LEARN_DIR = "learned"
+        private const val MAX_LEARNED = 6      // confirmed portraits kept per hero
 
         private const val TAG = "HeroIconMatcher"
         private const val ICON_SIZE = 64       // px: size for the colour-mix histogram

@@ -125,6 +125,10 @@ class FloatingOverlayService : LifecycleService() {
     private val detector by lazy { ServiceLocator.draftScreenDetector(this) }
     private val captureManager by lazy { ServiceLocator.screenCaptureManager(this) }
     private var detectJob: Job? = null
+    // Teach mode: portraits from the last Detect and what we decided for each slot.
+    private var lastThumbs: List<android.graphics.Bitmap?>? = null
+    private var slotHeroes: MutableList<Int?> = mutableListOf()
+    private var teachSlot: Int? = null
     private var isDetecting = false
     @Volatile private var projectionActive = false   // true while a MediaProjection session is alive
     private var detectMessage: String? = null          // shown in the status line until it times out
@@ -301,6 +305,12 @@ class FloatingOverlayService : LifecycleService() {
             onRemove = { i -> removeFromTeam(team[i]) },
             onHold = { i -> r?.byId?.get(team[i])?.let(::openHero) },
             onClear = ::clearTeam, inlineLabel = !stacked))
+        lastThumbs?.let { th ->
+            top.addView(ui.detectedRow(th, slotHeroes.map { id -> id?.let { name(it) } }, teachSlot) { i ->
+                teachSlot = if (teachSlot == i) null else i
+                setDetectMessage(if (teachSlot != null) "Slot ${i + 1}: tap the correct hero in the grid." else null, 30000)
+            })
+        }
         top.laneSelector()
         when {
             r == null -> top.addView(ui.note("Loading heroes…"))
@@ -652,7 +662,23 @@ class FloatingOverlayService : LifecycleService() {
             details, hero?.let { { openHero(it) } })
     }
 
+    /** Called after the user picked the right hero for a wrongly (or not) detected slot. */
+    private fun teachHero(hero: HeroUi) {
+        val slot = teachSlot ?: return
+        teachSlot = null
+        val thumb = lastThumbs?.getOrNull(slot)
+        if (thumb != null) lifecycleScope.launch(safe) {
+            ServiceLocator.heroIconMatcher(this@FloatingOverlayService).learn(hero.id, thumb)
+        }
+        val old = slotHeroes.getOrNull(slot)
+        if (slot < slotHeroes.size) slotHeroes[slot] = hero.id
+        if (old != null && old != hero.id && old !in slotHeroes) removeFromTeam(old)
+        addToTeam(hero)
+        setDetectMessage("Learned: slot ${slot + 1} is ${hero.name}. Detect will know it next time.", 10000)
+    }
+
     private fun toggleEnemy(hero: HeroUi) {
+        if (teachSlot != null) { teachHero(hero); return }
         if (hero.id in team) removeFromTeam(hero.id) else addToTeam(hero)
     }
 
@@ -676,6 +702,7 @@ class FloatingOverlayService : LifecycleService() {
     }
 
     private fun clearTeam() {
+        lastThumbs = null; slotHeroes = mutableListOf(); teachSlot = null
         team.toList().forEach { teamJobs.remove(it)?.cancel(); teamMatchups.remove(it) }
         team.clear()
         teamPage = false
@@ -844,6 +871,11 @@ class FloatingOverlayService : LifecycleService() {
                     setDetectMessage(getString(R.string.detect_found, detected.size) +
                         (result.debugNote?.let { "  ·  $it" } ?: ""), 15000)
                 }
+                // Keep the portraits so the user can correct a wrong slot (teach mode).
+                lastThumbs = result.thumbs
+                slotHeroes = result.slots.toMutableList()
+                teachSlot = null
+                render()
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -1177,7 +1209,7 @@ class FloatingOverlayService : LifecycleService() {
     companion object {
         private const val CHANNEL_ID = "overlay"
         private const val NOTIF_ID = 42
-        private const val BUILD_TAG = "fix4"   // shown in the Detect toast: confirms the new build is installed
+        private const val BUILD_TAG = "fix5"   // shown in the Detect toast: confirms the new build is installed
         private const val MAX_TEAM = 5
         private const val HIDE_BEFORE_CAPTURE_MS = 300L
         private const val MAX_RECENT = 18

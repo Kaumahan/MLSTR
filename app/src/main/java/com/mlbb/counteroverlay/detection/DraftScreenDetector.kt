@@ -55,6 +55,8 @@ class DraftScreenDetector(
         val screenshot: Bitmap,         // caller must recycle when done
         val scores: List<Float> = emptyList(),   // best similarity per slot (diagnostics)
         val debugNote: String? = null,           // outcome of saving the debug images
+        /** The portrait crop of each slot (null = off-screen). Kept so the user can teach the app. */
+        val thumbs: List<Bitmap?> = emptyList(),
     ) {
         val detected: List<Int> get() = slots.filterNotNull()
     }
@@ -82,16 +84,18 @@ class DraftScreenDetector(
         val rects = slotRects(w, h)
         // Per slot: the best-ranked heroes (best first). Each slot is scored on several slightly
         // different cuts of its portrait so a few pixels of misalignment do not matter.
-        val ranked: List<List<HeroIconMatcher.Candidate>> = rects.map { rect ->
+        val perSlot: List<Pair<List<HeroIconMatcher.Candidate>, Bitmap?>> = rects.map { rect ->
             async {
                 val crops = cropVariants(screenshot, rect)
                 if (crops.isNotEmpty()) {
                     val top = iconMatcher.rank(crops, heroes, CANDIDATES_PER_SLOT)
-                    crops.forEach { it.recycle() }
-                    top
-                } else emptyList()
+                    crops.drop(1).forEach { it.recycle() }
+                    top to (crops[0] as Bitmap?)      // the exact crop is kept for teaching
+                } else (emptyList<HeroIconMatcher.Candidate>() to (null as Bitmap?))
             }
         }.awaitAll()
+        val ranked = perSlot.map { it.first }
+        val thumbs = perSlot.map { it.second }
 
         // Pick one hero per slot such that NO hero is used twice and the total score is highest.
         val threshold = iconMatcher.matchThreshold
@@ -102,7 +106,7 @@ class DraftScreenDetector(
             ranked.joinToString { top -> top.firstOrNull()?.let { "id=${it.heroId} s=%.2f".format(it.score) } ?: "-" } +
             "  ->  " + results.joinToString { it?.toString() ?: "-" })
         val note = if (SAVE_DEBUG_IMAGES) saveDebugImages(screenshot, rects, ranked, results, heroes) else null
-        DetectionResult(slots = results, screenshot = screenshot, scores = scores, debugNote = note)
+        DetectionResult(slots = results, screenshot = screenshot, scores = scores, debugNote = note, thumbs = thumbs)
     }
 
     /**
