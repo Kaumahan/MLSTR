@@ -174,7 +174,7 @@ class FloatingOverlayService : LifecycleService() {
         val promoted = consentGranted && startAsForeground(withProjection = true)
         if (!promoted && !startAsForeground(withProjection = projectionActive)) { stopSelf(); return START_NOT_STICKY }
         if (intent?.action == ACTION_STOP) stopSelf()
-        if (intent?.action == ACTION_TEST_IMAGE && !isDetecting) runDetection(testImage = true)
+        if (com.mlbb.counteroverlay.BuildConfig.DEBUG && intent?.action == ACTION_TEST_IMAGE && !isDetecting) runDetection(testImage = true)
         if (promoted) {
             run {
                 val mp = try {
@@ -774,7 +774,7 @@ class FloatingOverlayService : LifecycleService() {
 
     private fun onDetectTapped() {
         // Instant feedback that does not depend on the panel redrawing; also shows which build runs.
-        android.widget.Toast.makeText(this, "Detect tapped ($BUILD_TAG)", android.widget.Toast.LENGTH_SHORT).show()
+        if (com.mlbb.counteroverlay.BuildConfig.DEBUG) android.widget.Toast.makeText(this, "Detect tapped ($BUILD_TAG)", android.widget.Toast.LENGTH_SHORT).show()
         if (!captureManager.isRunning()) {
             // Ask the user for MediaProjection permission via MainActivity.
             setDetectMessage(
@@ -1007,8 +1007,9 @@ class FloatingOverlayService : LifecycleService() {
         view.findViewById<ImageButton>(R.id.btnDetect).setOnClickListener {
             onDetectTapped()
         }
-        // Long-press Detect = test with a screenshot picked from the gallery (no game needed).
-        view.findViewById<ImageButton>(R.id.btnDetect).setOnLongClickListener {
+        // DEVELOPER ONLY (debug builds, never in the Play Store release):
+        // long-press Detect = test with a screenshot picked from the gallery (no game needed).
+        if (com.mlbb.counteroverlay.BuildConfig.DEBUG) view.findViewById<ImageButton>(R.id.btnDetect).setOnLongClickListener {
             startActivity(Intent(this, MainActivity::class.java).apply {
                 action = MainActivity.ACTION_PICK_TEST_IMAGE
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
@@ -1176,7 +1177,7 @@ class FloatingOverlayService : LifecycleService() {
     companion object {
         private const val CHANNEL_ID = "overlay"
         private const val NOTIF_ID = 42
-        private const val BUILD_TAG = "fix3"   // shown in the Detect toast: confirms the new build is installed
+        private const val BUILD_TAG = "fix4"   // shown in the Detect toast: confirms the new build is installed
         private const val MAX_TEAM = 5
         private const val HIDE_BEFORE_CAPTURE_MS = 300L
         private const val MAX_RECENT = 18

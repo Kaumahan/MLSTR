@@ -22,7 +22,7 @@ import kotlinx.coroutines.withContext
  *   1. Capture a frame via [ScreenCaptureManager].
  *   2. Crop each of the up to 5 enemy pick slots using layout constants.
  *   3. Match each crop against the roster using [HeroIconMatcher].
- *   4. Return the detected hero IDs (up to 5, unknowns omitted).
+ *   4. Assign heroes to slots so no hero appears twice, and return the IDs (unknowns omitted).
  *
  * ----- MLBB Draft-Pick Layout (portrait, 1080 px wide reference) ------
  *
@@ -80,26 +80,28 @@ class DraftScreenDetector(
         val h = screenshot.height.toFloat()
 
         val rects = slotRects(w, h)
-        val matches = rects.map { rect ->
+        // Per slot: the best-ranked heroes (best first). Each slot is scored on several slightly
+        // different cuts of its portrait so a few pixels of misalignment do not matter.
+        val ranked: List<List<HeroIconMatcher.Candidate>> = rects.map { rect ->
             async {
-                val crop = cropSafely(screenshot, rect)
-                if (crop != null) {
-                    val (id, score) = iconMatcher.bestMatch(crop, heroes)
-                    crop.recycle()
-                    id to score
-                } else HeroIconMatcher.NO_MATCH to 0f
+                val crops = cropVariants(screenshot, rect)
+                if (crops.isNotEmpty()) {
+                    val top = iconMatcher.rank(crops, heroes, CANDIDATES_PER_SLOT)
+                    crops.forEach { it.recycle() }
+                    top
+                } else emptyList()
             }
         }.awaitAll()
 
+        // Pick one hero per slot such that NO hero is used twice and the total score is highest.
         val threshold = iconMatcher.matchThreshold
-        val results = matches.map { (id, score) ->
-            id.takeIf { it != HeroIconMatcher.NO_MATCH && score > threshold }
-        }
-        val scores = matches.map { it.second }
+        val results = assignUnique(ranked, threshold)
+        val scores = ranked.map { it.firstOrNull()?.score ?: 0f }
 
         Log.d(TAG, "Detection ${screenshot.width}x${screenshot.height}: " +
-            matches.joinToString { (id, s) -> "id=$id score=%.2f".format(s) })
-        val note = if (SAVE_DEBUG_IMAGES) saveDebugImages(screenshot, rects, matches) else null
+            ranked.joinToString { top -> top.firstOrNull()?.let { "id=${it.heroId} s=%.2f".format(it.score) } ?: "-" } +
+            "  ->  " + results.joinToString { it?.toString() ?: "-" })
+        val note = if (SAVE_DEBUG_IMAGES) saveDebugImages(screenshot, rects, ranked, results, heroes) else null
         DetectionResult(slots = results, screenshot = screenshot, scores = scores, debugNote = note)
     }
 
@@ -109,17 +111,37 @@ class DraftScreenDetector(
      * Open it in your gallery and share it with the developer. Set [SAVE_DEBUG_IMAGES] to false
      * before releasing.
      */
-    private fun saveDebugImages(shot: Bitmap, rects: List<RectF>, matches: List<Pair<Int, Float>>): String {
+    private fun saveDebugImages(
+        shot: Bitmap,
+        rects: List<RectF>,
+        ranked: List<List<HeroIconMatcher.Candidate>>,
+        results: List<Int?>,
+        heroes: List<HeroUi>,
+    ): String {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return "Debug images need Android 10+"
         return runCatching {
             val annotated = shot.copy(Bitmap.Config.ARGB_8888, true)
             val canvas = Canvas(annotated)
             val stroke = Paint().apply { style = Paint.Style.STROKE; strokeWidth = 4f; color = Color.RED }
-            val text = Paint().apply { color = Color.YELLOW; textSize = annotated.height / 28f; isFakeBoldText = true }
+            val text = Paint().apply {
+                color = Color.YELLOW; textSize = annotated.height / 38f
+                isFakeBoldText = true; textAlign = Paint.Align.RIGHT
+                setShadowLayer(4f, 0f, 0f, Color.BLACK)
+            }
+            val names = heroes.associate { it.id to it.name }
             rects.forEachIndexed { i, r ->
                 canvas.drawRect(r, stroke)
-                val (id, s) = matches[i]
-                canvas.drawText("#$i id=$id %.2f".format(s), r.left, (r.top - 8f).coerceAtLeast(text.textSize), text)
+                // Text sits to the LEFT of each box: the final verdict for the slot, then the top 3
+                // guesses with blended score (s), colour (h) and outline (e) similarity.
+                val top = ranked.getOrElse(i) { emptyList() }
+                val x = r.left - 10f
+                var y = r.top + text.textSize
+                val picked = results.getOrNull(i)
+                canvas.drawText("#$i " + (picked?.let { "-> ${names[it] ?: it}" } ?: "REJECTED"), x, y, text)
+                top.take(3).forEachIndexed { k, c ->
+                    y += text.textSize * 1.15f
+                    canvas.drawText("${k + 1}. ${names[c.heroId] ?: c.heroId}  s%.2f h%.2f e%.2f".format(c.score, c.hist, c.edge), x, y, text)
+                }
             }
             val stamp = System.currentTimeMillis()
             save(annotated, "ace_debug_${stamp}_annotated.png")
@@ -176,6 +198,65 @@ class DraftScreenDetector(
         )
     }
 
+    /**
+     * Chooses one hero per slot with the rule "a hero can only be on the enemy team once".
+     *
+     * A slot may only take a candidate whose score reaches [threshold]; otherwise it stays empty.
+     * Among all valid combinations the one with the highest total score wins, so when two slots
+     * both think "Nolan", the slot that is more sure keeps him and the other falls back to its
+     * next-best guess (or stays empty) instead of showing a duplicate.
+     * Exhaustive search is cheap: 5 slots x [CANDIDATES_PER_SLOT] candidates.
+     */
+    private fun assignUnique(ranked: List<List<HeroIconMatcher.Candidate>>, threshold: Float): List<Int?> {
+        val n = ranked.size
+        val cur = IntArray(n) { -1 }
+        val bestPick = IntArray(n) { -1 }
+        var bestTotal = -1f
+        val used = HashSet<Int>()
+
+        fun search(slot: Int, total: Float) {
+            if (slot == n) {
+                if (total > bestTotal) { bestTotal = total; cur.copyInto(bestPick) }
+                return
+            }
+            cur[slot] = -1
+            search(slot + 1, total)                       // leave this slot empty
+            for ((k, c) in ranked[slot].withIndex()) {
+                if (c.score < threshold || c.heroId in used) continue
+                used += c.heroId
+                cur[slot] = k
+                search(slot + 1, total + c.score)
+                used -= c.heroId
+            }
+            cur[slot] = -1
+        }
+        search(0, 0f)
+
+        return List(n) { i -> bestPick[i].takeIf { it >= 0 }?.let { ranked[i][it].heroId } }
+    }
+
+    /**
+     * The exact portrait crop plus slightly smaller / larger / shifted cuts of it. The layout
+     * constants were measured on one screenshot, so real phones can be a few pixels off.
+     */
+    private fun cropVariants(src: Bitmap, rect: RectF): List<Bitmap> {
+        val cx = rect.centerX(); val cy = rect.centerY()
+        val w = rect.width(); val h = rect.height()
+        fun cut(scale: Float, dx: Float, dy: Float) = cropSafely(src, RectF(
+            cx + dx * w - w * scale / 2f, cy + dy * h - h * scale / 2f,
+            cx + dx * w + w * scale / 2f, cy + dy * h + h * scale / 2f,
+        ))
+        return listOfNotNull(
+            cut(1.00f, 0f, 0f),
+            cut(0.90f, 0f, 0f),
+            cut(1.10f, 0f, 0f),
+            cut(1.00f, -0.05f, 0f),
+            cut(1.00f, 0.05f, 0f),
+            cut(1.00f, 0f, -0.05f),
+            cut(1.00f, 0f, 0.05f),
+        )
+    }
+
     private fun cropSafely(src: Bitmap, rect: RectF): Bitmap? {
         val l = rect.left.toInt().coerceAtLeast(0)
         val t = rect.top.toInt().coerceAtLeast(0)
@@ -197,6 +278,9 @@ class DraftScreenDetector(
     companion object {
         private const val TAG = "DraftScreenDetector"
 
+        /** How many top guesses per slot are kept for the "no duplicate heroes" assignment. */
+        private const val CANDIDATES_PER_SLOT = 8
+
         // Landscape enemy column, all in units of screen height (H), x measured from the right edge.
         private const val LAND_LEFT_FROM_RIGHT = 0.272f    // portrait left edge  = W - 0.272 H
         private const val LAND_RIGHT_FROM_RIGHT = 0.108f   // portrait right edge = W - 0.108 H
@@ -204,8 +288,8 @@ class DraftScreenDetector(
         private const val LAND_PITCH = 60f / 379f          // distance between portraits
         private const val LAND_SLOT_H = 46f / 379f         // portrait height (excludes name label)
 
-        /** Writes screenshots to Pictures/AceCounterDebug on every Detect. Turn OFF for release. */
-        private const val SAVE_DEBUG_IMAGES = true
+        /** Saves screenshots to Pictures/AceCounterDebug on every Detect. Debug builds only. */
+        private val SAVE_DEBUG_IMAGES = com.mlbb.counteroverlay.BuildConfig.DEBUG
 
         // ---------------------------------------------------------------
         // MLBB draft pick layout — portrait 1080 × 1920 reference coords.

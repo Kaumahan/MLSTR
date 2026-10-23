@@ -87,7 +87,7 @@ class MainActivity : AppCompatActivity() {
         // If we were started to request screen capture, skip the overlay-permission flow.
         if (intent?.action == ACTION_REQUEST_PROJECTION) {
             requestingProjection = true
-        } else if (intent?.action == ACTION_PICK_TEST_IMAGE) {
+        } else if (com.mlbb.counteroverlay.BuildConfig.DEBUG && intent?.action == ACTION_PICK_TEST_IMAGE) {
             pickingTestImage = true
         }
     }
