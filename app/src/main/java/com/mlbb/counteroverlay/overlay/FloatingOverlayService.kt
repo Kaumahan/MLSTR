@@ -773,15 +773,20 @@ class FloatingOverlayService : LifecycleService() {
     }
 
     private fun onDetectTapped() {
+        // Instant feedback that does not depend on the panel redrawing; also shows which build runs.
+        android.widget.Toast.makeText(this, "Detect tapped ($BUILD_TAG)", android.widget.Toast.LENGTH_SHORT).show()
         if (!captureManager.isRunning()) {
             // Ask the user for MediaProjection permission via MainActivity.
+            setDetectMessage(
+                "Allow screen capture: a permission screen should open. If nothing opens, " +
+                    "pull down the notifications and tap \"Allow detect\".", 20000)
             val intent = Intent(this, MainActivity::class.java).apply {
                 action = MainActivity.ACTION_REQUEST_PROJECTION
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
             }
-            startActivity(intent)
-            // Show a brief status message in the overlay.
-            setDetectMessage(getString(R.string.detect_no_permission), 12000)
+            // Some phones (Infinix/Transsion, Xiaomi...) silently block activities started from a
+            // background service; the notification button is the always-allowed fallback.
+            try { startActivity(intent) } catch (e: RuntimeException) { CrashReporter.record(this, e) }
             return
         }
         if (isDetecting) return   // already scanning
@@ -1135,11 +1140,20 @@ class FloatingOverlayService : LifecycleService() {
         val openIntent = PendingIntent.getActivity(
             this, 2, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE,
         )
+        val allowDetectIntent = PendingIntent.getActivity(
+            this, 3,
+            Intent(this, MainActivity::class.java).apply {
+                action = MainActivity.ACTION_REQUEST_PROJECTION
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
+            },
+            PendingIntent.FLAG_IMMUTABLE,
+        )
         val notification = NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(getString(R.string.notif_title))
             .setContentText(getString(R.string.notif_text))
             .setContentIntent(openIntent)
+            .addAction(0, "Allow detect", allowDetectIntent)
             .addAction(0, getString(R.string.notif_stop), stopIntent)
             .setOngoing(true)
             .build()
@@ -1162,6 +1176,7 @@ class FloatingOverlayService : LifecycleService() {
     companion object {
         private const val CHANNEL_ID = "overlay"
         private const val NOTIF_ID = 42
+        private const val BUILD_TAG = "fix3"   // shown in the Detect toast: confirms the new build is installed
         private const val MAX_TEAM = 5
         private const val HIDE_BEFORE_CAPTURE_MS = 300L
         private const val MAX_RECENT = 18
