@@ -827,8 +827,8 @@ class FloatingOverlayService : LifecycleService() {
                 if (detected.isEmpty()) {
                     val best = result.scores.maxOrNull() ?: 0f
                     setDetectMessage(getString(R.string.detect_none) +
-                        "  (closest match ${(best * 100).toInt()}%, need ${(ServiceLocator.heroIconMatcher(this@FloatingOverlayService).matchThreshold * 100).toInt()}%." +
-                        " Debug image: Pictures/AceCounterDebug)", 15000)
+                        "  (closest match ${(best * 100).toInt()}%, need ${(ServiceLocator.heroIconMatcher(this@FloatingOverlayService).matchThreshold * 100).toInt()}%)." +
+                        (result.debugNote?.let { "  $it" } ?: ""), 20000)
                 } else {
                     // Replace the current enemy team with detected heroes.
                     clearTeam()
@@ -836,7 +836,8 @@ class FloatingOverlayService : LifecycleService() {
                     detected.forEach { id ->
                         rosterMap[id]?.let { addToTeam(it) }
                     }
-                    setDetectMessage(getString(R.string.detect_found, detected.size))
+                    setDetectMessage(getString(R.string.detect_found, detected.size) +
+                        (result.debugNote?.let { "  ·  $it" } ?: ""), 15000)
                 }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e

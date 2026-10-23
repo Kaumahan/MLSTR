@@ -54,6 +54,7 @@ class DraftScreenDetector(
         val slots: List<Int?>,          // length 5; null = empty / unknown slot
         val screenshot: Bitmap,         // caller must recycle when done
         val scores: List<Float> = emptyList(),   // best similarity per slot (diagnostics)
+        val debugNote: String? = null,           // outcome of saving the debug images
     ) {
         val detected: List<Int> get() = slots.filterNotNull()
     }
@@ -98,8 +99,8 @@ class DraftScreenDetector(
 
         Log.d(TAG, "Detection ${screenshot.width}x${screenshot.height}: " +
             matches.joinToString { (id, s) -> "id=$id score=%.2f".format(s) })
-        if (SAVE_DEBUG_IMAGES) saveDebugImages(screenshot, rects, matches)
-        DetectionResult(slots = results, screenshot = screenshot, scores = scores)
+        val note = if (SAVE_DEBUG_IMAGES) saveDebugImages(screenshot, rects, matches) else null
+        DetectionResult(slots = results, screenshot = screenshot, scores = scores, debugNote = note)
     }
 
     /**
@@ -108,9 +109,9 @@ class DraftScreenDetector(
      * Open it in your gallery and share it with the developer. Set [SAVE_DEBUG_IMAGES] to false
      * before releasing.
      */
-    private fun saveDebugImages(shot: Bitmap, rects: List<RectF>, matches: List<Pair<Int, Float>>) {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return
-        runCatching {
+    private fun saveDebugImages(shot: Bitmap, rects: List<RectF>, matches: List<Pair<Int, Float>>): String {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return "Debug images need Android 10+"
+        return runCatching {
             val annotated = shot.copy(Bitmap.Config.ARGB_8888, true)
             val canvas = Canvas(annotated)
             val stroke = Paint().apply { style = Paint.Style.STROKE; strokeWidth = 4f; color = Color.RED }
@@ -124,7 +125,11 @@ class DraftScreenDetector(
             save(annotated, "ace_debug_${stamp}_annotated.png")
             save(shot, "ace_debug_${stamp}_raw.png")
             annotated.recycle()
-        }.onFailure { Log.w(TAG, "Could not save debug images: ${it.message}") }
+            "Debug images saved in Gallery > Pictures > AceCounterDebug"
+        }.getOrElse {
+            Log.w(TAG, "Could not save debug images: ${it.message}")
+            "Debug images NOT saved: ${it.message ?: it.javaClass.simpleName}"
+        }
     }
 
     private fun save(bmp: Bitmap, name: String) {
@@ -134,8 +139,10 @@ class DraftScreenDetector(
             put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/AceCounterDebug")
         }
         val resolver = context.contentResolver
-        val uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values) ?: return
-        resolver.openOutputStream(uri)?.use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
+        val uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
+            ?: throw IllegalStateException("Android refused to create the file")
+        val out = resolver.openOutputStream(uri) ?: throw IllegalStateException("Could not open the file")
+        out.use { check(bmp.compress(Bitmap.CompressFormat.PNG, 100, it)) { "PNG write failed" } }
     }
 
     // ------------------------------------------------------------------ helpers
