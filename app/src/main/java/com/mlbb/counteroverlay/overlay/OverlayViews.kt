@@ -158,12 +158,12 @@ class OverlayViews(private val ctx: Context) {
      * The 5 portraits the last Detect looked at, each with the hero it decided on ("?" = none).
      * Tapping one starts "teach" mode: the next hero tapped in the grid is the correct answer.
      */
-    fun detectedRow(thumbs: List<Bitmap?>, names: List<String?>, selected: Int?, onTap: (Int) -> Unit): View =
+    fun detectedRow(thumbs: List<Bitmap?>, names: List<String?>, selected: Int?, onTap: (Int) -> Unit, onHold: (Int) -> Unit): View =
         LinearLayout(ctx).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(0, dp(2), 0, dp(2))
             addView(text(
-                if (selected == null) "Detected · tap a portrait to correct it" else "Now tap the correct hero in the grid",
+                if (selected == null) "Detected · tap = correct it, hold = no hero here. \"Name?\" = unsure guess" else "Now tap the correct hero in the grid",
                 10.5f, if (selected == null) R.color.text_secondary else R.color.accent, bold = selected != null))
             addView(LinearLayout(ctx).apply {
                 orientation = LinearLayout.HORIZONTAL
@@ -172,13 +172,14 @@ class OverlayViews(private val ctx: Context) {
                         orientation = LinearLayout.VERTICAL
                         gravity = Gravity.CENTER_HORIZONTAL
                         setOnClickListener { onTap(i) }
+                        setOnLongClickListener { onHold(i); true }
                         addView(ImageView(ctx).apply {
                             scaleType = ImageView.ScaleType.CENTER_CROP
                             setImageBitmap(thumbs[i])
                             if (selected == i) setBackgroundResource(R.drawable.pick_ring)
                             setPadding(dp(2), dp(2), dp(2), dp(2))
                         }, LinearLayout.LayoutParams(dp(36), dp(36)))
-                        addView(text(names.getOrNull(i) ?: "?", 9f, R.color.text_secondary).apply {
+                        addView(text(names.getOrNull(i) ?: "–", 9f, R.color.text_secondary).apply {
                             maxLines = 1; ellipsize = TextUtils.TruncateAt.END; gravity = Gravity.CENTER
                         }, LinearLayout.LayoutParams(dp(40), WRAP_CONTENT))
                     }, LinearLayout.LayoutParams(dp(40), WRAP_CONTENT).apply { marginEnd = dp(3) })

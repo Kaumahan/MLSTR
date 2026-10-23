@@ -129,6 +129,7 @@ class FloatingOverlayService : LifecycleService() {
     private var lastThumbs: List<android.graphics.Bitmap?>? = null
     private var slotHeroes: MutableList<Int?> = mutableListOf()
     private var teachSlot: Int? = null
+    private var lastGuesses: List<Int?> = emptyList()
     private var isDetecting = false
     @Volatile private var projectionActive = false   // true while a MediaProjection session is alive
     private var detectMessage: String? = null          // shown in the status line until it times out
@@ -306,10 +307,14 @@ class FloatingOverlayService : LifecycleService() {
             onHold = { i -> r?.byId?.get(team[i])?.let(::openHero) },
             onClear = ::clearTeam, inlineLabel = !stacked))
         lastThumbs?.let { th ->
-            top.addView(ui.detectedRow(th, slotHeroes.map { id -> id?.let { name(it) } }, teachSlot) { i ->
-                teachSlot = if (teachSlot == i) null else i
-                setDetectMessage(if (teachSlot != null) "Slot ${i + 1}: tap the correct hero in the grid." else null, 30000)
-            })
+            top.addView(ui.detectedRow(th, slotHeroes.mapIndexed { i, id ->
+                id?.let { name(it) } ?: lastGuesses.getOrNull(i)?.let { name(it) + "?" }
+            }, teachSlot,
+                onTap = { i ->
+                    teachSlot = if (teachSlot == i) null else i
+                    setDetectMessage(if (teachSlot != null) "Slot ${i + 1}: tap the correct hero in the grid." else null, 30000)
+                },
+                onHold = { i -> clearSlot(i) }))
         }
         top.laneSelector()
         when {
@@ -662,6 +667,15 @@ class FloatingOverlayService : LifecycleService() {
             details, hero?.let { { openHero(it) } })
     }
 
+    /** Hold on a portrait: nobody is picked there, so drop the hero detection put in that slot. */
+    private fun clearSlot(slot: Int) {
+        teachSlot = null
+        val old = slotHeroes.getOrNull(slot)
+        if (slot < slotHeroes.size) slotHeroes[slot] = null
+        if (old != null && old !in slotHeroes) removeFromTeam(old) else render()
+        setDetectMessage("Slot ${slot + 1} cleared.", 5000)
+    }
+
     /** Called after the user picked the right hero for a wrongly (or not) detected slot. */
     private fun teachHero(hero: HeroUi) {
         val slot = teachSlot ?: return
@@ -702,7 +716,7 @@ class FloatingOverlayService : LifecycleService() {
     }
 
     private fun clearTeam() {
-        lastThumbs = null; slotHeroes = mutableListOf(); teachSlot = null
+        lastThumbs = null; slotHeroes = mutableListOf(); teachSlot = null; lastGuesses = emptyList()
         team.toList().forEach { teamJobs.remove(it)?.cancel(); teamMatchups.remove(it) }
         team.clear()
         teamPage = false
@@ -873,6 +887,7 @@ class FloatingOverlayService : LifecycleService() {
                 }
                 // Keep the portraits so the user can correct a wrong slot (teach mode).
                 lastThumbs = result.thumbs
+                lastGuesses = result.guesses
                 slotHeroes = result.slots.toMutableList()
                 teachSlot = null
                 render()

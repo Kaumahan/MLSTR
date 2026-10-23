@@ -61,6 +61,7 @@ class HeroIconMatcher(
         val grid: Float,    // colour map correlation
         val gray: Float,    // shape correlation
         val edge: Float,    // outline (edge direction) correlation
+        val fromLearned: Boolean = false,   // matched a portrait the user taught, not roster art
     )
 
     private val cache = ConcurrentHashMap<Int, Feature>()
@@ -74,6 +75,9 @@ class HeroIconMatcher(
 
     /** Minimum blended score of the best hero for a slot to count as a match (0-1). */
     val matchThreshold: Float get() = THRESHOLD
+
+    /** Lower bar for matches against portraits the user confirmed: those are real, exact looks. */
+    val learnedThreshold: Float get() = LEARNED_THRESHOLD
 
     // ------------------------------------------------------------------ public API
 
@@ -138,13 +142,13 @@ class HeroIconMatcher(
             for (hero in heroes) {
                 val icon = cache[hero.id]
                     ?: (if (hero.icon != null) loadFeature(hero)?.also { cache[hero.id] = it } else null)
-                val refs = ArrayList<Feature>(2)
-                icon?.let { refs.add(it) }
-                learned[hero.id]?.let { refs.addAll(it) }
+                val refs = ArrayList<Pair<Feature, Boolean>>(2)
+                icon?.let { refs.add(it to false) }
+                learned[hero.id]?.forEach { refs.add(it to true) }
                 if (refs.isEmpty()) continue
                 var best: Candidate? = null
-                for (q in queries) for (ref in refs) {
-                    val c = compare(hero.id, q, ref)
+                for (q in queries) for ((ref, isLearned) in refs) {
+                    val c = compare(hero.id, q, ref, isLearned)
                     if (best == null || c.score > best.score) best = c
                 }
                 best?.let { out += it }
@@ -161,7 +165,7 @@ class HeroIconMatcher(
     suspend fun rank(crop: Bitmap, heroes: List<HeroUi>, topK: Int = 8): List<Candidate> =
         rank(listOf(crop), heroes, topK)
 
-    private fun compare(heroId: Int, q: Feature, ref: Feature): Candidate {
+    private fun compare(heroId: Int, q: Feature, ref: Feature, fromLearned: Boolean): Candidate {
         val h = dot(q.hist, ref.hist, normalise = true)
         val g = dot(q.grid, ref.grid)
         val s = dot(q.gray, ref.gray)
@@ -170,7 +174,7 @@ class HeroIconMatcher(
             W_GRID * g.coerceAtLeast(0f) +
             W_GRAY * s.coerceAtLeast(0f) +
             W_EDGE * e.coerceAtLeast(0f)
-        return Candidate(heroId, blended, h, g, s, e)
+        return Candidate(heroId, blended, h, g, s, e, fromLearned)
     }
 
     // ------------------------------------------------------------------ loading
@@ -342,10 +346,12 @@ class HeroIconMatcher(
         /**
          * Accept threshold on the BLENDED score (the old 0.75 was on colour mix alone, which is why
          * look-alike palettes got through). Correlation features score roughly 0.2-0.4 for a wrong
-         * hero and 0.6+ for the right one. Raise it if wrong heroes still show up, lower it if real
+         * hero and 0.6+ for the right one. Roster-art matches need 0.60 (a weak 0.51 once put Brody on
+         * the team by mistake); matches against portraits you taught only need [LEARNED_THRESHOLD]. Raise it if wrong heroes still show up, lower it if real
          * picks are rejected; the debug screenshot prints the score of every guess.
          */
-        private const val THRESHOLD = 0.50f
+        private const val THRESHOLD = 0.60f
+        private const val LEARNED_THRESHOLD = 0.50f
 
         private const val FEAT = 48            // px: size for the colour map, shape and edge features
         private const val MARGIN = 4           // px border ignored on each side

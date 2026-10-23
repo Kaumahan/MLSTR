@@ -57,6 +57,8 @@ class DraftScreenDetector(
         val debugNote: String? = null,           // outcome of saving the debug images
         /** The portrait crop of each slot (null = off-screen). Kept so the user can teach the app. */
         val thumbs: List<Bitmap?> = emptyList(),
+        /** Best guess per slot even when it was too weak to accept (shown as "Name?"). */
+        val guesses: List<Int?> = emptyList(),
     ) {
         val detected: List<Int> get() = slots.filterNotNull()
     }
@@ -99,14 +101,15 @@ class DraftScreenDetector(
 
         // Pick one hero per slot such that NO hero is used twice and the total score is highest.
         val threshold = iconMatcher.matchThreshold
-        val results = assignUnique(ranked, threshold)
+        val results = assignUnique(ranked, threshold, iconMatcher.learnedThreshold)
         val scores = ranked.map { it.firstOrNull()?.score ?: 0f }
 
         Log.d(TAG, "Detection ${screenshot.width}x${screenshot.height}: " +
             ranked.joinToString { top -> top.firstOrNull()?.let { "id=${it.heroId} s=%.2f".format(it.score) } ?: "-" } +
             "  ->  " + results.joinToString { it?.toString() ?: "-" })
         val note = if (SAVE_DEBUG_IMAGES) saveDebugImages(screenshot, rects, ranked, results, heroes) else null
-        DetectionResult(slots = results, screenshot = screenshot, scores = scores, debugNote = note, thumbs = thumbs)
+        DetectionResult(slots = results, screenshot = screenshot, scores = scores, debugNote = note, thumbs = thumbs,
+            guesses = ranked.map { it.firstOrNull()?.heroId })
     }
 
     /**
@@ -211,7 +214,7 @@ class DraftScreenDetector(
      * next-best guess (or stays empty) instead of showing a duplicate.
      * Exhaustive search is cheap: 5 slots x [CANDIDATES_PER_SLOT] candidates.
      */
-    private fun assignUnique(ranked: List<List<HeroIconMatcher.Candidate>>, threshold: Float): List<Int?> {
+    private fun assignUnique(ranked: List<List<HeroIconMatcher.Candidate>>, threshold: Float, learnedThreshold: Float): List<Int?> {
         val n = ranked.size
         val cur = IntArray(n) { -1 }
         val bestPick = IntArray(n) { -1 }
@@ -226,7 +229,7 @@ class DraftScreenDetector(
             cur[slot] = -1
             search(slot + 1, total)                       // leave this slot empty
             for ((k, c) in ranked[slot].withIndex()) {
-                if (c.score < threshold || c.heroId in used) continue
+                if (c.score < (if (c.fromLearned) learnedThreshold else threshold) || c.heroId in used) continue
                 used += c.heroId
                 cur[slot] = k
                 search(slot + 1, total + c.score)
