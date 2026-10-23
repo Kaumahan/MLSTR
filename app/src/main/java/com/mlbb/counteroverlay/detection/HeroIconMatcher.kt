@@ -74,7 +74,7 @@ class HeroIconMatcher(
     suspend fun preload(heroes: List<HeroUi>) = withContext(Dispatchers.IO) {
         heroes.map { hero ->
             async {
-                if (hero.id !in cache && hero.icon != null) {
+                if (!cache.containsKey(hero.id) && hero.icon != null) {
                     loadFeature(hero)?.let { cache[hero.id] = it }
                 }
             }
