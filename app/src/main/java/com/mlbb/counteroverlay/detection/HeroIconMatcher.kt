@@ -3,6 +3,7 @@ package com.mlbb.counteroverlay.detection
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Canvas
 import android.graphics.Color
 import android.util.Log
 import coil.ImageLoader
@@ -200,7 +201,30 @@ class HeroIconMatcher(
 
     // ------------------------------------------------------------------ features
 
-    private fun featureOf(src: Bitmap): Feature {
+    /**
+     * Roster icons are circles with TRANSPARENT corners, which read as black pixels and would add
+     * a fake circular outline to every icon's edge/shape features (draft portraits are full
+     * squares). Paint such images onto neutral grey first.
+     */
+    private fun flatten(src: Bitmap): Bitmap {
+        if (!src.hasAlpha()) return src
+        val out = Bitmap.createBitmap(src.width, src.height, Bitmap.Config.ARGB_8888)
+        val c = Canvas(out)
+        c.drawColor(Color.rgb(128, 128, 128))
+        c.drawBitmap(src, 0f, 0f, null)
+        return out
+    }
+
+    private fun featureOf(original: Bitmap): Feature {
+        val src = flatten(original)
+        try {
+            return featureOfOpaque(src)
+        } finally {
+            if (src !== original) src.recycle()
+        }
+    }
+
+    private fun featureOfOpaque(src: Bitmap): Feature {
         val hist = histogramOf(src)
 
         val s = Bitmap.createScaledBitmap(src, FEAT, FEAT, true)
