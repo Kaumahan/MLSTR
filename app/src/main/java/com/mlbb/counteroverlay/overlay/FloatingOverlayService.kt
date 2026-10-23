@@ -126,6 +126,7 @@ class FloatingOverlayService : LifecycleService() {
     private val captureManager by lazy { ServiceLocator.screenCaptureManager(this) }
     private var detectJob: Job? = null
     private var isDetecting = false
+    @Volatile private var projectionActive = false   // true while a MediaProjection session is alive
 
     private val gridAdapter = HeroGridAdapter(
         isSelected = { it in team },
@@ -152,20 +153,40 @@ class FloatingOverlayService : LifecycleService() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         super.onStartCommand(intent, flags, startId)
-        // Every startForegroundService() must be answered with startForeground(), even when
-        // we're already running (e.g. the app icon was tapped again). Cheap and idempotent.
-        if (!startAsForeground()) { stopSelf(); return START_NOT_STICKY }
-        if (intent?.action == ACTION_STOP) stopSelf()
+        // Screen-capture consent relayed from MainActivity (only present for START_PROJECTION).
+        var resultCode = android.app.Activity.RESULT_CANCELED
+        var data: Intent? = null
         if (intent?.action == ACTION_START_PROJECTION) {
-            val resultCode = intent.getIntExtra(EXTRA_PROJECTION_RESULT_CODE, android.app.Activity.RESULT_CANCELED)
+            resultCode = intent.getIntExtra(EXTRA_PROJECTION_RESULT_CODE, android.app.Activity.RESULT_CANCELED)
             @Suppress("DEPRECATION")
-            val data = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU)
+            data = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU)
                 intent.getParcelableExtra(EXTRA_PROJECTION_DATA, Intent::class.java)
             else intent.getParcelableExtra(EXTRA_PROJECTION_DATA)
-            if (resultCode == android.app.Activity.RESULT_OK && data != null) {
-                val mpm = getSystemService(MediaProjectionManager::class.java)
-                val mp = mpm.getMediaProjection(resultCode, data) ?: return START_NOT_STICKY
-                captureManager.start(mp)
+        }
+        val consentGranted = resultCode == android.app.Activity.RESULT_OK && data != null
+
+        // Every startForegroundService() must be answered with startForeground(), even when
+        // we're already running (e.g. the app icon was tapped again). Cheap and idempotent.
+        // The mediaProjection type may only be claimed AFTER the user consented, and it must be
+        // in place BEFORE getMediaProjection(); otherwise Android throws a SecurityException.
+        val promoted = consentGranted && startAsForeground(withProjection = true)
+        if (!promoted && !startAsForeground(withProjection = projectionActive)) { stopSelf(); return START_NOT_STICKY }
+        if (intent?.action == ACTION_STOP) stopSelf()
+        if (promoted) {
+            run {
+                val mp = try {
+                    getSystemService(MediaProjectionManager::class.java).getMediaProjection(resultCode, data!!)
+                } catch (e: RuntimeException) {   // consent token stale/reused: keep the overlay alive
+                    CrashReporter.record(this, e); null
+                } ?: return@run
+                try {
+                    captureManager.start(mp) { projectionActive = false }
+                } catch (e: RuntimeException) {   // e.g. virtual display refused: overlay keeps working
+                    CrashReporter.record(this, e)
+                    runCatching { captureManager.stop() }
+                    return@run
+                }
+                projectionActive = true
                 // Pre-warm icon matcher after the roster is ready
                 lifecycleScope.launch(safe) {
                     val heroList = roster.value?.heroes
@@ -1053,13 +1074,13 @@ class FloatingOverlayService : LifecycleService() {
     ).apply { gravity = Gravity.TOP or Gravity.START }
 
     /** Returns false if Android refused (e.g. started from the background); never throws. */
-    private fun startAsForeground(): Boolean = try {
-        startAsForegroundUnsafe(); true
+    private fun startAsForeground(withProjection: Boolean = false): Boolean = try {
+        startAsForegroundUnsafe(withProjection); true
     } catch (e: RuntimeException) {
         CrashReporter.record(this, e); false
     }
 
-    private fun startAsForegroundUnsafe() {
+    private fun startAsForegroundUnsafe(withProjection: Boolean) {
         val nm = getSystemService<NotificationManager>()!!
         nm.createNotificationChannel(
             NotificationChannel(CHANNEL_ID, getString(R.string.notif_channel), NotificationManager.IMPORTANCE_LOW)
@@ -1080,10 +1101,17 @@ class FloatingOverlayService : LifecycleService() {
             .setOngoing(true)
             .build()
 
-        val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
-            ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE or
-            ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
-        else 0
+        // Base type is the overlay itself. mediaProjection is added only once capture consent
+        // exists (Android 14+ rejects it earlier; Android 10-13 require it for getMediaProjection).
+        val type = when {
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE ->
+                if (withProjection) ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE or
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+                else ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q ->
+                if (withProjection) ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION else 0
+            else -> 0
+        }
         ServiceCompat.startForeground(this, NOTIF_ID, notification, type)
         isRunning = true
     }

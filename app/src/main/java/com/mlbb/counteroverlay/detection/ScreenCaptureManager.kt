@@ -31,6 +31,7 @@ class ScreenCaptureManager(private val context: Context) {
     private var projection: MediaProjection? = null
     private var virtualDisplay: VirtualDisplay? = null
     private var imageReader: ImageReader? = null
+    private var projectionCallback: MediaProjection.Callback? = null
 
     /** Background thread used for all ImageReader callbacks. */
     private val ioThread = HandlerThread("ScreenCapture").also { it.start() }
@@ -42,10 +43,22 @@ class ScreenCaptureManager(private val context: Context) {
      *
      * @param mp   A fresh [MediaProjection] returned by
      *             [android.media.projection.MediaProjectionManager.getMediaProjection].
+     * @param onStopped Called (on the capture thread) if the system ends the session, e.g. the
+     *             user taps the screen-sharing chip. [isRunning] is already false by then.
      */
-    fun start(mp: MediaProjection) {
+    fun start(mp: MediaProjection, onStopped: () -> Unit = {}) {
         stop() // tear down any previous session
         projection = mp
+
+        // Android 14+ throws from createVirtualDisplay() unless a callback is registered first.
+        val cb = object : MediaProjection.Callback() {
+            override fun onStop() {
+                cleanup(stopProjection = false)
+                onStopped()
+            }
+        }
+        projectionCallback = cb
+        mp.registerCallback(cb, ioHandler)
 
         val dm = context.resources.displayMetrics
         val w = dm.widthPixels
@@ -103,10 +116,17 @@ class ScreenCaptureManager(private val context: Context) {
         }, ioHandler)
     }
 
-    fun stop() {
+    fun stop() = cleanup(stopProjection = true)
+
+    private fun cleanup(stopProjection: Boolean) {
         imageReader?.close(); imageReader = null
         virtualDisplay?.release(); virtualDisplay = null
-        projection?.stop(); projection = null
+        val mp = projection; projection = null
+        val cb = projectionCallback; projectionCallback = null
+        if (mp != null) {
+            cb?.let { runCatching { mp.unregisterCallback(it) } }   // avoid onStop() re-entering us
+            if (stopProjection) runCatching { mp.stop() }
+        }
         Log.d(TAG, "ScreenCaptureManager stopped")
     }
 
