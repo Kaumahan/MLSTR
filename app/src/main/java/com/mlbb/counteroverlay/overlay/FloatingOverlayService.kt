@@ -127,6 +127,8 @@ class FloatingOverlayService : LifecycleService() {
     private var detectJob: Job? = null
     private var isDetecting = false
     @Volatile private var projectionActive = false   // true while a MediaProjection session is alive
+    private var detectMessage: String? = null          // shown in the status line until it times out
+    private val clearDetectMessage = Runnable { detectMessage = null; render() }
 
     private val gridAdapter = HeroGridAdapter(
         isSelected = { it in team },
@@ -265,10 +267,10 @@ class FloatingOverlayService : LifecycleService() {
         p.findViewById<TextView>(R.id.title).text = hero?.name ?: if (teamPage) "Vs enemy team" else ""
         // Status line only when it matters (loading / offline / error): saves a row.
         val r = roster
-        val showStatus = r.isLoading || r.error != null || r.value == null || r.source == DataSource.BUNDLED
+        val showStatus = detectMessage != null || r.isLoading || r.error != null || r.value == null || r.source == DataSource.BUNDLED
         p.findViewById<TextView>(R.id.status).apply {
             visibility = if (showStatus) View.VISIBLE else View.GONE
-            text = statusText()
+            text = detectMessage ?: statusText()
         }
         renderRankBar(p)
         styleTabs(p)
@@ -761,6 +763,14 @@ class FloatingOverlayService : LifecycleService() {
      *   2. If projection is ready → run the detection pipeline, then auto-populate
      *      the enemy team with whatever heroes were found.
      */
+    /** Shows [msg] in the panel's status line (survives redraws) and clears it after [ms]. */
+    private fun setDetectMessage(msg: String?, ms: Long = 8000) {
+        mainHandler.removeCallbacks(clearDetectMessage)
+        detectMessage = msg
+        if (msg != null) mainHandler.postDelayed(clearDetectMessage, ms)
+        render()
+    }
+
     private fun onDetectTapped() {
         if (!captureManager.isRunning()) {
             // Ask the user for MediaProjection permission via MainActivity.
@@ -770,8 +780,7 @@ class FloatingOverlayService : LifecycleService() {
             }
             startActivity(intent)
             // Show a brief status message in the overlay.
-            panel?.findViewById<TextView>(R.id.status)?.text =
-                getString(R.string.detect_no_permission)
+            setDetectMessage(getString(R.string.detect_no_permission), 12000)
             return
         }
         if (isDetecting) return   // already scanning
@@ -780,25 +789,38 @@ class FloatingOverlayService : LifecycleService() {
 
     private fun runDetection() {
         val heroList = roster.value?.heroes
-        if (heroList.isNullOrEmpty()) return
+        if (heroList.isNullOrEmpty()) { setDetectMessage("Heroes are still loading, try again in a moment."); return }
 
         detectJob?.cancel()
         isDetecting = true
         panel?.findViewById<ImageButton>(R.id.btnDetect)?.alpha = 0.4f
-        panel?.findViewById<TextView>(R.id.status)?.text = getString(R.string.detect_scanning)
+        setDetectMessage(getString(R.string.detect_scanning), 15000)
 
         detectJob = lifecycleScope.launch(safe) {
             try {
                 // Pre-warm icon histograms lazily (no-op if already warmed).
                 ServiceLocator.heroIconMatcher(this@FloatingOverlayService).preload(heroList)
 
-                val result = detector.detect(heroList)
+                // Screen capture includes our own overlay windows: hide them for the shot,
+                // otherwise the panel covers the enemy picks it is trying to read.
+                panel?.visibility = View.INVISIBLE
+                bubble?.visibility = View.INVISIBLE
+                kotlinx.coroutines.delay(HIDE_BEFORE_CAPTURE_MS)
+
+                val result = try {
+                    detector.detect(heroList)
+                } finally {
+                    panel?.visibility = View.VISIBLE
+                    bubble?.visibility = View.VISIBLE
+                }
                 val detected = result.detected
                 result.screenshot.recycle()
 
                 if (detected.isEmpty()) {
-                    panel?.findViewById<TextView>(R.id.status)?.text =
-                        getString(R.string.detect_none)
+                    val best = result.scores.maxOrNull() ?: 0f
+                    setDetectMessage(getString(R.string.detect_none) +
+                        "  (closest match ${(best * 100).toInt()}%, need ${(ServiceLocator.heroIconMatcher(this@FloatingOverlayService).matchThreshold * 100).toInt()}%." +
+                        " Debug image: Pictures/AceCounterDebug)", 15000)
                 } else {
                     // Replace the current enemy team with detected heroes.
                     clearTeam()
@@ -806,10 +828,13 @@ class FloatingOverlayService : LifecycleService() {
                     detected.forEach { id ->
                         rosterMap[id]?.let { addToTeam(it) }
                     }
-                    panel?.findViewById<TextView>(R.id.status)?.text =
-                        getString(R.string.detect_found, detected.size)
-                    render()
+                    setDetectMessage(getString(R.string.detect_found, detected.size))
                 }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                CrashReporter.record(this@FloatingOverlayService, e)
+                setDetectMessage("Detect failed: ${e.message ?: e.javaClass.simpleName}", 15000)
             } finally {
                 isDetecting = false
                 panel?.findViewById<ImageButton>(R.id.btnDetect)?.alpha = 1f
@@ -1120,6 +1145,7 @@ class FloatingOverlayService : LifecycleService() {
         private const val CHANNEL_ID = "overlay"
         private const val NOTIF_ID = 42
         private const val MAX_TEAM = 5
+        private const val HIDE_BEFORE_CAPTURE_MS = 300L
         private const val MAX_RECENT = 18
         private const val GRID_SHARE_LAND = 0.58f
         private const val FILTER_SEARCH = "🔍"

@@ -1,8 +1,15 @@
 package com.mlbb.counteroverlay.detection
 
 import android.content.Context
+import android.content.ContentValues
 import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
 import android.graphics.RectF
+import android.os.Build
+import android.os.Environment
+import android.provider.MediaStore
 import android.util.Log
 import com.mlbb.counteroverlay.data.model.HeroUi
 import kotlinx.coroutines.Dispatchers
@@ -46,6 +53,7 @@ class DraftScreenDetector(
         /** Non-null entries are hero IDs whose icon was recognised. */
         val slots: List<Int?>,          // length 5; null = empty / unknown slot
         val screenshot: Bitmap,         // caller must recycle when done
+        val scores: List<Float> = emptyList(),   // best similarity per slot (diagnostics)
     ) {
         val detected: List<Int> get() = slots.filterNotNull()
     }
@@ -63,20 +71,64 @@ class DraftScreenDetector(
         val w = screenshot.width.toFloat()
         val h = screenshot.height.toFloat()
 
-        val results = ENEMY_SLOTS.map { slot ->
+        val rects = ENEMY_SLOTS.map { scaledRect(it, w, h) }
+        val matches = rects.map { rect ->
             async {
-                val rect = scaledRect(slot, w, h)
                 val crop = cropSafely(screenshot, rect)
                 if (crop != null) {
-                    val id = iconMatcher.findBestMatch(crop, heroes)
+                    val (id, score) = iconMatcher.bestMatch(crop, heroes)
                     crop.recycle()
-                    id.takeIf { it != HeroIconMatcher.NO_MATCH }
-                } else null
+                    id to score
+                } else HeroIconMatcher.NO_MATCH to 0f
             }
         }.awaitAll()
 
-        Log.d(TAG, "Detection: ${results.map { it ?: '-' }}")
-        DetectionResult(slots = results, screenshot = screenshot)
+        val threshold = iconMatcher.matchThreshold
+        val results = matches.map { (id, score) ->
+            id.takeIf { it != HeroIconMatcher.NO_MATCH && score > threshold }
+        }
+        val scores = matches.map { it.second }
+
+        Log.d(TAG, "Detection ${screenshot.width}x${screenshot.height}: " +
+            matches.joinToString { (id, s) -> "id=$id score=%.2f".format(s) })
+        if (SAVE_DEBUG_IMAGES) saveDebugImages(screenshot, rects, matches)
+        DetectionResult(slots = results, screenshot = screenshot, scores = scores)
+    }
+
+    /**
+     * Saves the captured screen with the 5 crop rectangles drawn on it (and the best guess +
+     * score for each) to Pictures/AceCounterDebug, so you can SEE where the app is looking.
+     * Open it in your gallery and share it with the developer. Set [SAVE_DEBUG_IMAGES] to false
+     * before releasing.
+     */
+    private fun saveDebugImages(shot: Bitmap, rects: List<RectF>, matches: List<Pair<Int, Float>>) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return
+        runCatching {
+            val annotated = shot.copy(Bitmap.Config.ARGB_8888, true)
+            val canvas = Canvas(annotated)
+            val stroke = Paint().apply { style = Paint.Style.STROKE; strokeWidth = 4f; color = Color.RED }
+            val text = Paint().apply { color = Color.YELLOW; textSize = annotated.height / 28f; isFakeBoldText = true }
+            rects.forEachIndexed { i, r ->
+                canvas.drawRect(r, stroke)
+                val (id, s) = matches[i]
+                canvas.drawText("#$i id=$id %.2f".format(s), r.left, (r.top - 8f).coerceAtLeast(text.textSize), text)
+            }
+            val stamp = System.currentTimeMillis()
+            save(annotated, "ace_debug_${stamp}_annotated.png")
+            save(shot, "ace_debug_${stamp}_raw.png")
+            annotated.recycle()
+        }.onFailure { Log.w(TAG, "Could not save debug images: ${it.message}") }
+    }
+
+    private fun save(bmp: Bitmap, name: String) {
+        val values = ContentValues().apply {
+            put(MediaStore.Images.Media.DISPLAY_NAME, name)
+            put(MediaStore.Images.Media.MIME_TYPE, "image/png")
+            put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/AceCounterDebug")
+        }
+        val resolver = context.contentResolver
+        val uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values) ?: return
+        resolver.openOutputStream(uri)?.use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
     }
 
     // ------------------------------------------------------------------ helpers
@@ -111,6 +163,9 @@ class DraftScreenDetector(
 
     companion object {
         private const val TAG = "DraftScreenDetector"
+
+        /** Writes screenshots to Pictures/AceCounterDebug on every Detect. Turn OFF for release. */
+        private const val SAVE_DEBUG_IMAGES = true
 
         // ---------------------------------------------------------------
         // MLBB draft pick layout — portrait 1080 × 1920 reference coords.

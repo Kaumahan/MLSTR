@@ -69,11 +69,20 @@ class HeroIconMatcher(
      * @param crop      A small region of a screenshot (any size — will be scaled internally).
      * @param heroes    The roster to search within (typically the full list).
      */
-    suspend fun findBestMatch(crop: Bitmap, heroes: List<HeroUi>): Int =
+    suspend fun findBestMatch(crop: Bitmap, heroes: List<HeroUi>): Int {
+        val (id, score) = bestMatch(crop, heroes)
+        return if (id != NO_MATCH && score > threshold) id else NO_MATCH
+    }
+
+    /**
+     * Closest hero and its similarity score, even when below the threshold. Used for
+     * diagnostics ("why didn't it detect?") and by [findBestMatch].
+     */
+    suspend fun bestMatch(crop: Bitmap, heroes: List<HeroUi>): Pair<Int, Float> =
         withContext(Dispatchers.Default) {
             val cropHist = histogramOf(crop)
             var bestId = NO_MATCH
-            var bestScore = threshold
+            var bestScore = 0f
             for (hero in heroes) {
                 val ref = histCache[hero.id]
                     ?: (if (hero.icon != null) loadHistogram(hero)?.also { histCache[hero.id] = it } else null)
@@ -81,9 +90,11 @@ class HeroIconMatcher(
                 val score = cosineSimilarity(cropHist, ref)
                 if (score > bestScore) { bestScore = score; bestId = hero.id }
             }
-            if (bestId != NO_MATCH) Log.d(TAG, "Best match id=$bestId score=%.3f".format(bestScore))
-            bestId
+            Log.d(TAG, "Best candidate id=$bestId score=%.3f (threshold %.2f)".format(bestScore, threshold))
+            bestId to bestScore
         }
+
+    val matchThreshold: Float get() = threshold
 
     /**
      * Returns up to [topK] (heroId, score) pairs sorted by similarity descending.
