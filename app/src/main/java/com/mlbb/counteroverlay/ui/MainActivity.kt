@@ -33,6 +33,28 @@ class MainActivity : AppCompatActivity() {
     /** True when this Activity was launched specifically to request MediaProjection. */
     private var requestingProjection = false
 
+    /** True when launched from a long-press on Detect to pick a screenshot for testing. */
+    private var pickingTestImage = false
+
+    private val testImagePicker = registerForActivityResult(
+        ActivityResultContracts.GetContent()
+    ) { uri ->
+        if (uri != null) {
+            // Copy now: the picker's read permission may not outlive this screen.
+            val copied = runCatching {
+                contentResolver.openInputStream(uri)?.use { input ->
+                    java.io.File(cacheDir, FloatingOverlayService.TEST_IMAGE_FILE).outputStream().use { input.copyTo(it) }
+                }
+            }.isSuccess
+            if (copied) {
+                startService(Intent(this, FloatingOverlayService::class.java).apply {
+                    action = FloatingOverlayService.ACTION_TEST_IMAGE
+                })
+            }
+        }
+        finish()
+    }
+
     private val projectionLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
@@ -65,11 +87,18 @@ class MainActivity : AppCompatActivity() {
         // If we were started to request screen capture, skip the overlay-permission flow.
         if (intent?.action == ACTION_REQUEST_PROJECTION) {
             requestingProjection = true
+        } else if (intent?.action == ACTION_PICK_TEST_IMAGE) {
+            pickingTestImage = true
         }
     }
 
     override fun onResume() {
         super.onResume()
+        if (pickingTestImage) {
+            pickingTestImage = false
+            testImagePicker.launch("image/*")
+            return
+        }
         if (requestingProjection) {
             requestingProjection = false
             showProjectionDisclosure()
@@ -159,5 +188,7 @@ class MainActivity : AppCompatActivity() {
     companion object {
         /** Sent by FloatingOverlayService when the user taps the Detect button. */
         const val ACTION_REQUEST_PROJECTION = "com.mlbb.counteroverlay.REQUEST_PROJECTION"
+        /** Sent when the user long-presses Detect to test with a gallery screenshot. */
+        const val ACTION_PICK_TEST_IMAGE = "com.mlbb.counteroverlay.PICK_TEST_IMAGE"
     }
 }

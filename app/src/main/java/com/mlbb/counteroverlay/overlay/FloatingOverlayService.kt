@@ -174,6 +174,7 @@ class FloatingOverlayService : LifecycleService() {
         val promoted = consentGranted && startAsForeground(withProjection = true)
         if (!promoted && !startAsForeground(withProjection = projectionActive)) { stopSelf(); return START_NOT_STICKY }
         if (intent?.action == ACTION_STOP) stopSelf()
+        if (intent?.action == ACTION_TEST_IMAGE && !isDetecting) runDetection(testImage = true)
         if (promoted) {
             run {
                 val mp = try {
@@ -787,7 +788,7 @@ class FloatingOverlayService : LifecycleService() {
         runDetection()
     }
 
-    private fun runDetection() {
+    private fun runDetection(testImage: Boolean = false) {
         val heroList = roster.value?.heroes
         if (heroList.isNullOrEmpty()) { setDetectMessage("Heroes are still loading, try again in a moment."); return }
 
@@ -801,17 +802,24 @@ class FloatingOverlayService : LifecycleService() {
                 // Pre-warm icon histograms lazily (no-op if already warmed).
                 ServiceLocator.heroIconMatcher(this@FloatingOverlayService).preload(heroList)
 
-                // Screen capture includes our own overlay windows: hide them for the shot,
-                // otherwise the panel covers the enemy picks it is trying to read.
-                panel?.visibility = View.INVISIBLE
-                bubble?.visibility = View.INVISIBLE
-                kotlinx.coroutines.delay(HIDE_BEFORE_CAPTURE_MS)
-
-                val result = try {
-                    detector.detect(heroList)
-                } finally {
-                    panel?.visibility = View.VISIBLE
-                    bubble?.visibility = View.VISIBLE
+                val result = if (testImage) {
+                    // Test mode: analyse a picture the user picked instead of the live screen.
+                    val bmp = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                        android.graphics.BitmapFactory.decodeFile(java.io.File(cacheDir, TEST_IMAGE_FILE).path)
+                    } ?: throw IllegalStateException("Could not read the picked image")
+                    detector.detectBitmap(bmp, heroList)
+                } else {
+                    // Screen capture includes our own overlay windows: hide them for the shot,
+                    // otherwise the panel covers the enemy picks it is trying to read.
+                    panel?.visibility = View.INVISIBLE
+                    bubble?.visibility = View.INVISIBLE
+                    kotlinx.coroutines.delay(HIDE_BEFORE_CAPTURE_MS)
+                    try {
+                        detector.detect(heroList)
+                    } finally {
+                        panel?.visibility = View.VISIBLE
+                        bubble?.visibility = View.VISIBLE
+                    }
                 }
                 val detected = result.detected
                 result.screenshot.recycle()
@@ -993,6 +1001,15 @@ class FloatingOverlayService : LifecycleService() {
         view.findViewById<ImageButton>(R.id.btnDetect).setOnClickListener {
             onDetectTapped()
         }
+        // Long-press Detect = test with a screenshot picked from the gallery (no game needed).
+        view.findViewById<ImageButton>(R.id.btnDetect).setOnLongClickListener {
+            startActivity(Intent(this, MainActivity::class.java).apply {
+                action = MainActivity.ACTION_PICK_TEST_IMAGE
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
+            })
+            setDetectMessage("Pick a full-screen draft screenshot from your gallery…", 20000)
+            true
+        }
         view.findViewById<ImageButton>(R.id.btnRefresh).setOnClickListener {
             loadRoster(force = true)
             stack.lastOrNull()?.let { loadHeroData(it, force = true) }
@@ -1165,6 +1182,9 @@ class FloatingOverlayService : LifecycleService() {
         const val ACTION_STOP = "com.mlbb.counteroverlay.STOP"
         /** Sent by MainActivity after the user grants MediaProjection permission. */
         const val ACTION_START_PROJECTION = "com.mlbb.counteroverlay.START_PROJECTION"
+        /** Sent by MainActivity after the user picked a screenshot to test detection with. */
+        const val ACTION_TEST_IMAGE = "com.mlbb.counteroverlay.TEST_IMAGE"
+        const val TEST_IMAGE_FILE = "test_screen.img"
         const val EXTRA_PROJECTION_RESULT_CODE = "projection_result_code"
         const val EXTRA_PROJECTION_DATA = "projection_data"
 

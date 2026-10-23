@@ -64,10 +64,17 @@ class DraftScreenDetector(
      * @param heroes The full roster to match against.
      * @throws IllegalStateException if [ScreenCaptureManager] is not running.
      */
-    suspend fun detect(heroes: List<HeroUi>): DetectionResult = withContext(Dispatchers.Default) {
+    suspend fun detect(heroes: List<HeroUi>): DetectionResult {
         // Capture from main thread requirement is handled by ScreenCaptureManager internally.
         val screenshot = withContext(Dispatchers.Main) { screenCapture.captureFrame() }
+        return detectBitmap(screenshot, heroes)
+    }
 
+    /**
+     * Same analysis on any full-screen screenshot (used by the "test with a picture" feature,
+     * which needs no screen-capture permission). The picture must be the whole game screen.
+     */
+    suspend fun detectBitmap(screenshot: Bitmap, heroes: List<HeroUi>): DetectionResult = withContext(Dispatchers.Default) {
         val w = screenshot.width.toFloat()
         val h = screenshot.height.toFloat()
 
