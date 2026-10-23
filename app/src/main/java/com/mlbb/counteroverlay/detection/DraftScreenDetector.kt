@@ -71,7 +71,7 @@ class DraftScreenDetector(
         val w = screenshot.width.toFloat()
         val h = screenshot.height.toFloat()
 
-        val rects = ENEMY_SLOTS.map { scaledRect(it, w, h) }
+        val rects = slotRects(w, h)
         val matches = rects.map { rect ->
             async {
                 val crop = cropSafely(screenshot, rect)
@@ -133,6 +133,25 @@ class DraftScreenDetector(
 
     // ------------------------------------------------------------------ helpers
 
+    /**
+     * Pixel rectangles of the 5 enemy portraits.
+     *
+     * Landscape (how Mobile Legends is really played): the enemy team is a column of 5 portraits
+     * on the RIGHT edge, labelled "Player 1..5". The game UI scales with screen HEIGHT and is
+     * anchored to the right edge, so positions are measured from the right edge in units of
+     * height. This keeps them correct on phones with different aspect ratios (18:9, 20:9, ...).
+     * Measured on a real 843x379 draft screenshot.
+     */
+    private fun slotRects(w: Float, h: Float): List<RectF> {
+        if (w <= h) return ENEMY_SLOTS.map { scaledRect(it, w, h) }   // legacy portrait guess
+        val left = w - LAND_LEFT_FROM_RIGHT * h
+        val right = w - LAND_RIGHT_FROM_RIGHT * h
+        return List(5) { i ->
+            val top = (LAND_FIRST_TOP + LAND_PITCH * i) * h
+            RectF(left, top, right, top + LAND_SLOT_H * h)
+        }
+    }
+
     /** Scale a normalised [SlotDef] to pixel coordinates for [screen] dimensions. */
     private fun scaledRect(slot: SlotDef, screenW: Float, screenH: Float): RectF {
         return RectF(
@@ -163,6 +182,13 @@ class DraftScreenDetector(
 
     companion object {
         private const val TAG = "DraftScreenDetector"
+
+        // Landscape enemy column, all in units of screen height (H), x measured from the right edge.
+        private const val LAND_LEFT_FROM_RIGHT = 0.272f    // portrait left edge  = W - 0.272 H
+        private const val LAND_RIGHT_FROM_RIGHT = 0.108f   // portrait right edge = W - 0.108 H
+        private const val LAND_FIRST_TOP = 46f / 379f      // top of "Player 1" portrait
+        private const val LAND_PITCH = 60f / 379f          // distance between portraits
+        private const val LAND_SLOT_H = 46f / 379f         // portrait height (excludes name label)
 
         /** Writes screenshots to Pictures/AceCounterDebug on every Detect. Turn OFF for release. */
         private const val SAVE_DEBUG_IMAGES = true
