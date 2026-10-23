@@ -15,6 +15,7 @@ import android.util.Log
 import android.view.Display
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeoutOrNull
 
@@ -119,47 +120,60 @@ class ScreenCaptureManager(private val context: Context) {
     }
 
     /**
-     * Captures one fresh screen frame and returns it as a newly allocated [Bitmap].
+     * Captures the screen as a newly allocated [Bitmap].
      *
-     * Throws [IllegalStateException] if [start] was never called or no frame arrives in time.
+     * A virtual display only produces a frame when the picture CHANGES, so on a still screen no
+     * "new" frame ever arrives. The old code threw away the queued frame and then waited for a
+     * new one, which timed out. Now:
+     *  1. the newest queued frame is kept as a fallback,
+     *  2. we wait briefly for a genuinely fresh frame (the overlay was just hidden, so one
+     *     normally arrives),
+     *  3. if none comes, the fallback (which IS the current screen) is used,
+     *  4. only when there is no frame at all do we keep waiting, up to [CAPTURE_TIMEOUT_MS].
+     * Frames are polled instead of waiting for a callback, so a frame that lands between two
+     * steps can no longer be missed.
+     *
+     * Throws [IllegalStateException] if [start] was never called or no frame ever arrives.
      */
     suspend fun captureFrame(): Bitmap {
         ensureSize()
         val reader = imageReader
             ?: throw IllegalStateException("ScreenCaptureManager not started")
 
-        // Drop frames that were queued long before this request (they show an old screen).
+        var fallback: Bitmap? = null
         while (true) {
-            val stale = reader.acquireLatestImage() ?: break
-            stale.close()
+            val img = reader.acquireLatestImage() ?: break
+            try {
+                val bmp = toBitmap(img)
+                fallback?.recycle()
+                fallback = bmp
+            } catch (_: Throwable) {
+            } finally {
+                img.close()
+            }
         }
 
-        return withTimeoutOrNull(CAPTURE_TIMEOUT_MS) {
-            suspendCancellableCoroutine<Bitmap> { cont ->
-                cont.invokeOnCancellation { reader.setOnImageAvailableListener(null, null) }
-                reader.setOnImageAvailableListener({ r ->
-                    // One frame only.
-                    r.setOnImageAvailableListener(null, null)
-                    val image = r.acquireLatestImage()
-                    if (image == null) {
-                        if (cont.isActive) cont.resumeWithException(RuntimeException("acquireLatestImage returned null"))
-                        return@setOnImageAvailableListener
-                    }
-                    try {
-                        val bmp = toBitmap(image)
-                        if (cont.isActive) cont.resume(bmp) else bmp.recycle()
-                    } catch (t: Throwable) {
-                        if (cont.isActive) cont.resumeWithException(t)
-                    } finally {
-                        image.close()
-                    }
-                }, ioHandler)
-                // A completely static screen produces no new frame; re-attaching forces one.
-                ioHandler.postDelayed({
-                    if (cont.isActive) runCatching { virtualDisplay?.surface = reader.surface }
-                }, NUDGE_MS)
+        val fresh = withTimeoutOrNull(FRESH_TIMEOUT_MS) { awaitFrame(reader) }
+        if (fresh != null) { fallback?.recycle(); return fresh }
+        if (fallback != null) return fallback
+
+        return withTimeoutOrNull(CAPTURE_TIMEOUT_MS) { awaitFrame(reader) }
+            ?: throw IllegalStateException(
+                "Timed out waiting for a screen frame. Pull down the notifications, tap \"Allow detect\" again, then retry.")
+    }
+
+    /** Polls until a frame is available. Re-attaches the surface now and then to nudge a still screen. */
+    private suspend fun awaitFrame(reader: ImageReader): Bitmap {
+        var waited = 0L
+        while (true) {
+            val image = reader.acquireLatestImage()
+            if (image != null) {
+                try { return toBitmap(image) } finally { image.close() }
             }
-        } ?: throw IllegalStateException("Timed out waiting for a screen frame")
+            delay(POLL_MS)
+            waited += POLL_MS
+            if (waited % NUDGE_MS == 0L) runCatching { virtualDisplay?.surface = reader.surface }
+        }
     }
 
     private fun toBitmap(image: Image): Bitmap {
@@ -197,7 +211,9 @@ class ScreenCaptureManager(private val context: Context) {
 
     companion object {
         private const val TAG = "ScreenCapture"
-        private const val CAPTURE_TIMEOUT_MS = 3000L
-        private const val NUDGE_MS = 250L
+        private const val FRESH_TIMEOUT_MS = 1500L    // wait this long for a new frame, then use the queued one
+        private const val CAPTURE_TIMEOUT_MS = 5000L  // give up when there is no frame at all
+        private const val POLL_MS = 50L
+        private const val NUDGE_MS = 500L
     }
 }
