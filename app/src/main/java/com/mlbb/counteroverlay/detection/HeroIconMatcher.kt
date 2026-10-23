@@ -89,7 +89,7 @@ class HeroIconMatcher(
     suspend fun preload(heroes: List<HeroUi>) = withContext(Dispatchers.IO) {
         heroes.map { hero ->
             async {
-                if (!cache.containsKey(hero.id) && hero.icon != null) {
+                if (!cache.containsKey(hero.id) && (hero.icon != null || bundled.containsKey(hero.id))) {
                     loadFeature(hero)?.let { cache[hero.id] = it }
                 }
             }
@@ -142,7 +142,7 @@ class HeroIconMatcher(
             val out = ArrayList<Candidate>(heroes.size)
             for (hero in heroes) {
                 val icon = cache[hero.id]
-                    ?: (if (hero.icon != null) loadFeature(hero)?.also { cache[hero.id] = it } else null)
+                    ?: loadFeature(hero)?.also { cache[hero.id] = it }
                 val refs = ArrayList<Pair<Feature, Boolean>>(2)
                 icon?.let { refs.add(it to false) }
                 learned[hero.id]?.forEach { refs.add(it to true) }
@@ -180,7 +180,29 @@ class HeroIconMatcher(
 
     // ------------------------------------------------------------------ loading
 
+    /**
+     * Icons shipped inside the app: assets/hero_icons/<Name>_<id>.png. The hero is found by the id
+     * at the end of the file name, so no internet is needed and the label always matches the file.
+     */
+    private val bundled: Map<Int, String> by lazy {
+        runCatching {
+            context.assets.list(ASSET_DIR).orEmpty().mapNotNull { f ->
+                f.substringBeforeLast('.').substringAfterLast('_').toIntOrNull()?.let { it to f }
+            }.toMap()
+        }.getOrDefault(emptyMap())
+    }
+
+    private fun loadBundled(hero: HeroUi): Feature? {
+        val file = bundled[hero.id] ?: return null
+        return runCatching {
+            context.assets.open("$ASSET_DIR/$file").use { BitmapFactory.decodeStream(it) }?.let { bmp ->
+                featureOf(bmp).also { bmp.recycle() }
+            }
+        }.getOrNull()
+    }
+
     private suspend fun loadFeature(hero: HeroUi): Feature? {
+        loadBundled(hero)?.let { return it }
         val url = hero.icon ?: return null
         return try {
             val req = ImageRequest.Builder(context)
@@ -359,6 +381,7 @@ class HeroIconMatcher(
     companion object {
         const val NO_MATCH = -1
         private const val LEARN_DIR = "learned"
+        private const val ASSET_DIR = "hero_icons"
         private const val MAX_LEARNED = 6      // confirmed portraits kept per hero
 
         private const val TAG = "HeroIconMatcher"

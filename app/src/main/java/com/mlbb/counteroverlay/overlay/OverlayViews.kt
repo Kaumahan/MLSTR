@@ -163,10 +163,12 @@ class OverlayViews(private val ctx: Context) {
             orientation = LinearLayout.VERTICAL
             setPadding(0, dp(2), 0, dp(2))
             addView(text(
-                if (selected == null) "Detected · tap = correct it, hold = no hero here. \"Name?\" = unsure guess" else "Tap the right hero below (or in the grid)",
+                if (selected == null) "Detected · tap to fix, hold = none (? = unsure)" else "Tap the right hero below (or in the grid)",
                 10.5f, if (selected == null) R.color.text_secondary else R.color.accent, bold = selected != null))
+            // Equal-width columns so all 5 portraits always fit, however narrow the panel is.
             addView(LinearLayout(ctx).apply {
                 orientation = LinearLayout.HORIZONTAL
+                weightSum = thumbs.size.toFloat()
                 for (i in thumbs.indices) {
                     addView(LinearLayout(ctx).apply {
                         orientation = LinearLayout.VERTICAL
@@ -178,13 +180,13 @@ class OverlayViews(private val ctx: Context) {
                             setImageBitmap(thumbs[i])
                             if (selected == i) setBackgroundResource(R.drawable.pick_ring)
                             setPadding(dp(2), dp(2), dp(2), dp(2))
-                        }, LinearLayout.LayoutParams(dp(36), dp(36)))
+                        }, LinearLayout.LayoutParams(dp(32), dp(32)))
                         addView(text(names.getOrNull(i) ?: "–", 9f, R.color.text_secondary).apply {
                             maxLines = 1; ellipsize = TextUtils.TruncateAt.END; gravity = Gravity.CENTER
-                        }, LinearLayout.LayoutParams(dp(40), WRAP_CONTENT))
-                    }, LinearLayout.LayoutParams(dp(40), WRAP_CONTENT).apply { marginEnd = dp(3) })
+                        }, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+                    }, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f).apply { marginEnd = dp(2) })
                 }
-            })
+            }, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         }
 
     /** The top guesses for one slot as tappable chips: icon + name. */
