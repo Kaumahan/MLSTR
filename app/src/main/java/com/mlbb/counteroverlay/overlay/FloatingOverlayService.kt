@@ -687,7 +687,7 @@ class FloatingOverlayService : LifecycleService() {
         teachSlot = null
         val thumb = lastThumbs?.getOrNull(slot)
         if (thumb != null) lifecycleScope.launch(safe) {
-            ServiceLocator.heroIconMatcher(this@FloatingOverlayService).learn(hero.id, thumb)
+            ServiceLocator.heroIconMatcher(this@FloatingOverlayService).learn(hero.id, hero.name, thumb)
         }
         val old = slotHeroes.getOrNull(slot)
         if (slot < slotHeroes.size) slotHeroes[slot] = hero.id

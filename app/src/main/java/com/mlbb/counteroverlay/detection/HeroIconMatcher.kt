@@ -3,12 +3,16 @@ package com.mlbb.counteroverlay.detection
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.content.ContentValues
 import android.graphics.Canvas
+import android.os.Environment
+import android.provider.MediaStore
 import android.graphics.Color
 import android.util.Log
 import coil.ImageLoader
 import coil.request.ImageRequest
 import coil.request.SuccessResult
+import com.mlbb.counteroverlay.BuildConfig
 import com.mlbb.counteroverlay.data.model.HeroUi
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
@@ -63,6 +67,8 @@ class HeroIconMatcher(
         val gray: Float,    // shape correlation
         val edge: Float,    // outline (edge direction) correlation
         val fromLearned: Boolean = false,   // matched a portrait the user taught, not roster art
+        /** [score] plus a small tie-break bonus (popular / already-taught heroes). Ranking only. */
+        val rank: Float = score,
     )
 
     private val cache = ConcurrentHashMap<Int, Feature>()
@@ -73,6 +79,12 @@ class HeroIconMatcher(
      */
     private val learned = ConcurrentHashMap<Int, CopyOnWriteArrayList<Feature>>()
     @Volatile private var learnedLoaded = false
+
+    /**
+     * Portraits shipped INSIDE the app (assets/learned_seed/<heroId>_*.png), so a release build
+     * recognises heroes out of the box. Kept apart from [learned] so teaching never pushes them out.
+     */
+    private val seed = ConcurrentHashMap<Int, CopyOnWriteArrayList<Feature>>()
 
     /** Minimum blended score of the best hero for a slot to count as a match (0-1). */
     val matchThreshold: Float get() = THRESHOLD
@@ -95,11 +107,11 @@ class HeroIconMatcher(
             }
         }.awaitAll()
         loadLearned()
-        Log.d(TAG, "Preloaded ${cache.size}/${heroes.size} hero icons, ${learned.values.sumOf { it.size }} learned portraits")
+        Log.d(TAG, "Preloaded ${cache.size}/${heroes.size} hero icons, ${seed.values.sumOf { it.size }} bundled + ${learned.values.sumOf { it.size }} learned portraits")
     }
 
     /** Remembers [crop] as a true picture of [heroId]. Saved on the phone, so it survives restarts. */
-    suspend fun learn(heroId: Int, crop: Bitmap) = withContext(Dispatchers.IO) {
+    suspend fun learn(heroId: Int, heroName: String, crop: Bitmap) = withContext(Dispatchers.IO) {
         loadLearned()
         val list = learned.getOrPut(heroId) { CopyOnWriteArrayList() }
         while (list.size >= MAX_LEARNED) list.removeAt(0)       // forget the oldest
@@ -112,12 +124,40 @@ class HeroIconMatcher(
             dir.listFiles { f -> f.name.startsWith("${heroId}_") }
                 ?.sortedBy { it.lastModified() }?.dropLast(MAX_LEARNED)?.forEach { it.delete() }
         }.onFailure { Log.w(TAG, "Could not save learned portrait: ${it.message}") }
+        if (BuildConfig.DEBUG) exportCopy(heroId, heroName, crop)
         Unit
+    }
+
+    /**
+     * DEBUG builds also drop a copy in Pictures/AceCounterLearned (file name "<id>_<Name>_<time>.png").
+     * Copy those files into app/src/main/assets/learned_seed/ and rebuild: the release app then
+     * ships with everything you taught.
+     */
+    private fun exportCopy(heroId: Int, heroName: String, crop: Bitmap) {
+        runCatching {
+            val safe = heroName.replace(Regex("[^A-Za-z0-9-]+"), "")
+            val values = ContentValues().apply {
+                put(MediaStore.Images.Media.DISPLAY_NAME, "${heroId}_${safe}_${System.currentTimeMillis()}.png")
+                put(MediaStore.Images.Media.MIME_TYPE, "image/png")
+                put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/AceCounterLearned")
+            }
+            val resolver = context.contentResolver
+            val uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values) ?: return
+            resolver.openOutputStream(uri)?.use { crop.compress(Bitmap.CompressFormat.PNG, 100, it) }
+        }.onFailure { Log.w(TAG, "Could not export learned portrait: ${it.message}") }
     }
 
     private fun loadLearned() {
         if (learnedLoaded) return
         learnedLoaded = true
+        runCatching {
+            context.assets.list(SEED_DIR).orEmpty().forEach { f ->
+                val id = f.substringBefore('_').toIntOrNull() ?: return@forEach
+                val bmp = context.assets.open("$SEED_DIR/$f").use { BitmapFactory.decodeStream(it) } ?: return@forEach
+                seed.getOrPut(id) { CopyOnWriteArrayList() }.add(featureOf(bmp))
+                bmp.recycle()
+            }
+        }.onFailure { Log.w(TAG, "Could not read bundled portraits: ${it.message}") }
         runCatching {
             File(context.filesDir, LEARN_DIR).listFiles()?.sortedBy { it.lastModified() }?.forEach { f ->
                 val id = f.name.substringBefore('_').toIntOrNull() ?: return@forEach
@@ -140,11 +180,13 @@ class HeroIconMatcher(
             loadLearned()
             val queries = crops.map { featureOf(it) }
             val out = ArrayList<Candidate>(heroes.size)
+            val maxPick = heroes.maxOfOrNull { it.pickRate ?: 0.0 }?.takeIf { it > 0.0 } ?: 1.0
             for (hero in heroes) {
                 val icon = cache[hero.id]
                     ?: loadFeature(hero)?.also { cache[hero.id] = it }
                 val refs = ArrayList<Pair<Feature, Boolean>>(2)
                 icon?.let { refs.add(it to false) }
+                seed[hero.id]?.forEach { refs.add(it to true) }
                 learned[hero.id]?.forEach { refs.add(it to true) }
                 if (refs.isEmpty()) continue
                 var best: Candidate? = null
@@ -152,9 +194,15 @@ class HeroIconMatcher(
                     val c = compare(hero.id, q, ref, isLearned)
                     if (best == null || c.score > best.score) best = c
                 }
-                best?.let { out += it }
+                best?.let {
+                    // Small nudge for ties: heroes that are picked a lot, and heroes you already
+                    // taught, are more likely to be on screen. Acceptance still uses the raw score.
+                    val popular = PRIOR_POPULAR * Math.sqrt(((hero.pickRate ?: 0.0) / maxPick).coerceIn(0.0, 1.0)).toFloat()
+                    val taught = if (learned.containsKey(hero.id) || seed.containsKey(hero.id)) PRIOR_TAUGHT else 0f
+                    out += it.copy(rank = it.score + popular + taught)
+                }
             }
-            out.sortByDescending { it.score }
+            out.sortByDescending { it.rank }
             val top = out.take(topK)
             Log.d(TAG, "Top: " + top.take(3).joinToString {
                 "id=${it.heroId} s=%.2f h=%.2f g=%.2f y=%.2f e=%.2f".format(it.score, it.hist, it.grid, it.gray, it.edge)
@@ -382,6 +430,7 @@ class HeroIconMatcher(
         const val NO_MATCH = -1
         private const val LEARN_DIR = "learned"
         private const val ASSET_DIR = "hero_icons"
+        private const val SEED_DIR = "learned_seed"
         private const val MAX_LEARNED = 6      // confirmed portraits kept per hero
 
         private const val TAG = "HeroIconMatcher"
@@ -399,6 +448,10 @@ class HeroIconMatcher(
          */
         private const val THRESHOLD = 0.60f
         private const val LEARNED_THRESHOLD = 0.50f
+
+        // Ranking tie-breaks (added to the score only for ordering, never for accept/reject).
+        private const val PRIOR_POPULAR = 0.04f   // most-picked hero gets this, rare ones ~0
+        private const val PRIOR_TAUGHT = 0.03f    // heroes you taught (or that ship in learned_seed)
 
         private const val FEAT = 48            // px: size for the colour map, shape and edge features
         private const val MARGIN = 4           // px border ignored on each side

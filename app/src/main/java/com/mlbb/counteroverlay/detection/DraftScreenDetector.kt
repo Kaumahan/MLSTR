@@ -235,7 +235,7 @@ class DraftScreenDetector(
                 if (c.score < (if (c.fromLearned) learnedThreshold else threshold) || c.heroId in used) continue
                 used += c.heroId
                 cur[slot] = k
-                search(slot + 1, total + c.score)
+                search(slot + 1, total + c.rank)
                 used -= c.heroId
             }
             cur[slot] = -1
